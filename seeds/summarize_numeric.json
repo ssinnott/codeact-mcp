@@ -1,0 +1,29 @@
+{
+  "captured": [
+    {
+      "code": "summarize_numeric([2, 4, 4, 4, 5, 5, 7, 9])",
+      "note": "p90 sits between the 7th and 8th value, so it interpolates to 7.6",
+      "output": "{'count': 8, 'min': 2.0, 'max': 9.0, 'mean': 5.0, 'median': 4.5, 'stdev': 2.138089935299395, 'p90': 7.6}",
+      "ok": true
+    },
+    {
+      "code": "summarize_numeric([42.5])",
+      "note": "one value: stdev is None because a sample of one has no spread",
+      "output": "{'count': 1, 'min': 42.5, 'max': 42.5, 'mean': 42.5, 'median': 42.5, 'stdev': None, 'p90': 42.5}",
+      "ok": true
+    },
+    {
+      "code": "summarize_numeric([])",
+      "note": "empty input is an error, not a zeroed summary \u2014 the caller decides",
+      "output": "ValueError: summarize_numeric() needs at least one value, got an empty sequence",
+      "ok": true
+    },
+    {
+      "code": "summarize_numeric([1.0, float('nan'), 3.0])",
+      "note": "a NaN is rejected up front rather than quietly poisoning mean and stdev",
+      "output": "ValueError: values[1] is nan; a summary of non-finite values is meaningless",
+      "ok": true
+    }
+  ],
+  "source_hash": "c9b9e7f819a8ea48"
+}

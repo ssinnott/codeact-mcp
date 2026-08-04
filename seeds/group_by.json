@@ -1,0 +1,23 @@
+{
+  "captured": [
+    {
+      "code": "group_by(_rows, 'team')",
+      "note": "id 4 has no 'team' field, so it is dropped by default",
+      "output": "{'core': [{'id': 1, 'team': 'core'}, {'id': 3, 'team': 'core'}], 'infra': [{'id': 2, 'team': 'infra'}]}",
+      "ok": true
+    },
+    {
+      "code": "group_by(_rows, lambda r: r.get('team', 'unassigned'))",
+      "note": "a callable key is how you give the field-less records a bucket",
+      "output": "{'core': [{'id': 1, 'team': 'core'}, {'id': 3, 'team': 'core'}], 'infra': [{'id': 2, 'team': 'infra'}], 'unassigned': [{'id': 4}]}",
+      "ok": true
+    },
+    {
+      "code": "group_by(_rows, 'team', on_missing='raise')",
+      "note": "on_missing='raise' turns a missing field into a KeyError naming the index",
+      "output": "KeyError: \"record 3 has no field 'team'\"",
+      "ok": true
+    }
+  ],
+  "source_hash": "43669bf415dbe0d1"
+}

@@ -1,0 +1,23 @@
+{
+  "captured": [
+    {
+      "code": "parse_key_values(_env)",
+      "note": "comments, blanks and the `[section]` line are skipped; `export ` is dropped and quotes are removed",
+      "output": "{'DB_HOST': 'localhost', 'DB_PORT': '5432', 'GREETING': 'hello\\nworld', 'LITERAL': 'keep $this as-is', 'EMPTY': ''}",
+      "ok": true
+    },
+    {
+      "code": "parse_key_values('API_Key=abc\\nAPI_Key=xyz', lower_keys=True)",
+      "note": "keys folded to lowercase; a repeated key keeps the last value",
+      "output": "{'api_key': 'xyz'}",
+      "ok": true
+    },
+    {
+      "code": "parse_key_values('A=pa#ss\\nB=pa #ss\\nC=\"pa #ss\"')",
+      "note": "in a bare value a `#` after whitespace starts a comment and is cut; quote the value to keep it",
+      "output": "{'A': 'pa#ss', 'B': 'pa', 'C': 'pa #ss'}",
+      "ok": true
+    }
+  ],
+  "source_hash": "83aa6a192ae86a81"
+}
