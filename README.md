@@ -198,9 +198,43 @@ invitation to propose something.
 
 > **This is a policy layer, not a security boundary.** Python cannot be securely sandboxed
 > in-process — attribute traversal, `__globals__`, deserialization — and pretending
-> otherwise would be worse than saying so. The interpreter runs with your full user
-> privileges, the same as `Bash` already grants. Real containment (Landlock, seccomp) is
-> designed in DESIGN.md §9 and **not implemented**.
+> otherwise would be worse than saying so. For a boundary the kernel actually enforces,
+> see `run_as` below.
+
+## Running as a separate user
+
+By default the interpreter runs as you, the same as `Bash` does. Point it at another
+account and the containment stops being a matter of policy:
+
+```
+sudo useradd --system --no-create-home codeact-runner
+python3 tools/sandbox.py codeact-runner     # checks it, and prints the sudoers line
+```
+
+```json
+// ~/.codeact/config.json
+{"run_as": "codeact-runner"}
+```
+
+Verified behaviour under `run_as`: reading a 0600 file you own, listing `~/.ssh`, and
+writing outside the project all fail with `PermissionError` from the kernel — not from
+an AST walk that a determined `getattr` could sidestep. The session's state still
+persists across calls, and a timeout still sends `SIGINT` and preserves the namespace
+(sudo relays the signal, which is the part that could easily not have worked).
+
+**Two things to know before turning it on.**
+
+An unprivileged process cannot drop to another user by itself — `subprocess(user=)`
+needs `CAP_SETUID` — so this goes through `sudo` and needs a `NOPASSWD` rule scoped to
+exactly one interpreter and one target user. `tools/sandbox.py` prints the line. If the
+rule is missing, **the interpreter refuses to start** rather than quietly running with
+your full privileges; someone who set `run_as` believes they are isolated.
+
+The runner also cannot write to your project. That is usually what you want from
+`run_python` — file edits should go through `Edit`/`Write`, which stay reviewable — but
+it will break a helper that legitimately writes files. And because the secret store is
+`0600` and owned by you, the runner cannot read it either, which is the right default
+and means secret-using helpers need the broker described in DESIGN.md §10.
 
 ## Secrets
 

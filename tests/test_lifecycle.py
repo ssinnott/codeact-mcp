@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 from codeact_mcp import (  # noqa: E402
     config,
+    interpreter,
     guard,
     miner,
     proposals,
@@ -171,6 +172,53 @@ class TestGuardEnforcement(Case):
     def test_config_round_trip(self):
         config.save({**config.load(), "guard": "enforce"})
         self.assertTrue(config.enforcing())
+
+
+class TestRunAs(Case):
+    """Running the interpreter as a separate OS user.
+
+    This is the only boundary the kernel enforces; everything else in the guard
+    is policy that Python's dynamism can defeat.
+    """
+
+    def test_no_runner_means_a_plain_spawn(self):
+        command, extra = interpreter._spawn_plan(None)
+        self.assertEqual(extra, {})
+        self.assertNotIn("sudo", command)
+
+    def test_an_unprivileged_parent_goes_through_sudo(self):
+        # subprocess(user=) needs CAP_SETUID, so a normal install cannot drop
+        # privileges on its own — verified against the real syscall, not assumed.
+        if os.getuid() == 0:
+            self.skipTest("running as root, which takes the direct path")
+        command, extra = interpreter._spawn_plan("nobody")
+        self.assertEqual(command[:4], ["sudo", "-n", "-u", "nobody"])
+        self.assertEqual(extra, {})
+
+    def test_root_drops_directly_and_sets_the_group_too(self):
+        if os.getuid() != 0:
+            self.skipTest("needs root to exercise the direct path")
+        _, extra = interpreter._spawn_plan("nobody")
+        # Passing user without group leaves the gid at root — the classic way a
+        # privilege drop turns out to have dropped almost nothing.
+        self.assertIn("group", extra)
+        self.assertIn("extra_groups", extra)
+        self.assertNotEqual(extra["group"], 0)
+
+    def test_sudoers_line_names_the_real_interpreter(self):
+        line = interpreter.sudoers_line("codeact-runner")
+        self.assertIn("NOPASSWD", line)
+        self.assertIn(sys.executable, line)
+        self.assertIn("(codeact-runner)", line)
+
+    def test_an_unusable_runner_refuses_rather_than_running_as_you(self):
+        # Silently falling back would be worse than not offering the option:
+        # someone who set run_as believes they are isolated.
+        config.save({**config.load(), "run_as": "no-such-user-exists-here"})
+        session = interpreter.Session()
+        self.addCleanup(session.stop)
+        with self.assertRaises(interpreter.SandboxUnavailable):
+            session.start()
 
 
 class TestSecrets(Case):

@@ -21,6 +21,11 @@ DEFAULTS: dict[str, Any] = {
     "granted": [],
     # Seconds a single run_python call may take before it is interrupted.
     "timeout": 30,
+    # Run the interpreter as a different OS user. This is the one real
+    # containment boundary in the system — the AST guard is policy, but a
+    # different uid is enforced by the kernel. Null means "same user as Claude
+    # Code", which is what Bash already grants.
+    "run_as": None,
 }
 
 

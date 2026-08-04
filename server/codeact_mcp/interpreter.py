@@ -8,8 +8,11 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+from . import config
 
 WORKER = Path(__file__).with_name("worker.py")
 
@@ -23,23 +26,111 @@ class Timeout(Exception):
     pass
 
 
+class SandboxUnavailable(RuntimeError):
+    """run_as was configured but could not be honoured."""
+
+
+def sudoers_line(runner: str) -> str:
+    """The rule an unprivileged install needs, scoped as tightly as it can be."""
+    import getpass
+
+    return f"{getpass.getuser()} ALL=({runner}) NOPASSWD: {sys.executable}"
+
+
+def _spawn_plan(runner: str | None) -> tuple[list[str], dict]:
+    """How to launch the worker, given the configured user.
+
+    Two routes, because an unprivileged process cannot drop to another user on
+    its own — `subprocess(user=)` raises PermissionError without CAP_SETUID.
+
+    * Already root: drop directly. The group must be set too; passing `user`
+      alone leaves the gid at root, which is the classic way a "privilege drop"
+      turns out to have dropped almost nothing.
+    * Otherwise: go through sudo, which needs a NOPASSWD rule. `-n` so a
+      missing rule fails immediately instead of blocking on a password prompt
+      nobody will ever see. sudo relays SIGINT, so the timeout escalation still
+      interrupts the worker rather than losing its namespace.
+    """
+    base = [sys.executable, "-u", str(WORKER)]
+    if not runner:
+        return base, {}
+
+    if os.getuid() == 0:
+        import grp
+        import pwd
+
+        record = pwd.getpwnam(runner)
+        groups = [g.gr_gid for g in grp.getgrall() if runner in g.gr_mem]
+        return base, {"user": record.pw_uid, "group": record.pw_gid, "extra_groups": groups}
+
+    return ["sudo", "-n", "-u", runner, *base], {}
+
+
 class Session:
     def __init__(self, cwd: str | None = None) -> None:
         self.cwd = cwd or os.getcwd()
         self.proc: subprocess.Popen | None = None
+        self._stderr = None
         self._seq = 0
         self.restarts = 0
 
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
-        self.proc = subprocess.Popen(
-            [sys.executable, "-u", str(WORKER)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            cwd=self.cwd,
-            text=False,
+        runner = config.get("run_as")
+        # A file rather than a pipe: nothing reads the worker's stderr during
+        # normal operation, and a full pipe buffer would wedge the interpreter.
+        self._stderr = tempfile.TemporaryFile()
+        try:
+            # Inside the guard: resolving an unknown user raises KeyError, and
+            # that deserves the same actionable message as any other failure to
+            # honour run_as.
+            command, extra = _spawn_plan(runner)
+            self.proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._stderr,
+                cwd=self.cwd,
+                text=False,
+                **extra,
+            )
+        except Exception as exc:
+            # Never fall back to running with full privileges. Someone who
+            # configured run_as believes they are isolated, and silently
+            # ignoring it would be worse than not offering the option at all.
+            raise SandboxUnavailable(
+                f"cannot start the interpreter as {config.get('run_as')!r}: "
+                f"{type(exc).__name__}: {exc}\n"
+                f"Run `python3 tools/sandbox.py` to check the setup, or clear "
+                f"`run_as` in ~/.codeact/config.json to run as yourself."
+            ) from exc
+
+        if runner:
+            self._verify_sandbox(runner)
+
+    def _verify_sandbox(self, runner: str) -> None:
+        """Confirm the worker actually came up as the other user.
+
+        sudo failing prints to stderr and exits non-zero rather than raising, so
+        without this a missing sudoers rule would look like a mysterious timeout
+        instead of a setup problem with a known fix.
+        """
+        assert self.proc is not None
+        for _ in range(40):
+            if self.proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        else:
+            return  # still alive after 2s, so it started
+
+        self._stderr.seek(0)
+        detail = self._stderr.read().decode("utf-8", "replace").strip()[-400:]
+        raise SandboxUnavailable(
+            f"the interpreter could not start as {runner!r}.\n{detail}\n\n"
+            f"Grant it with this line in /etc/sudoers.d/codeact:\n"
+            f"  {sudoers_line(runner)}\n"
+            f"Then check with `python3 tools/sandbox.py`."
         )
 
     def _ensure(self) -> subprocess.Popen:

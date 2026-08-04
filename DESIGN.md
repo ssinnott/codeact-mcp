@@ -808,12 +808,19 @@ from a single execution.
 | 4 ✅ | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
 | 5 ✅ | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 
-**All five phases are implemented.** One deliberate exception, recorded honestly
-rather than quietly: **layer-2 containment is not built.** The interpreter runs with
-your full user privileges, the same as `Bash` already grants. What exists is the policy
-layer (§9 layer 1), rlimits, and a scratch-directory-plus-no-credentials boundary for
-trial runs. Landlock and seccomp remain the right answer and remain undone, so the
-README says the guard is a policy layer and not a security boundary — because it is.
+**All five phases are implemented**, and layer 2 has a real answer: **`run_as` runs the
+interpreter as a separate OS user**, which is enforced by the kernel rather than by an
+AST walk. Two facts shaped it, both measured rather than assumed. An unprivileged parent
+cannot use `subprocess(user=)` at all — it raises `PermissionError` without `CAP_SETUID`
+— so the practical route is `sudo` with a tightly scoped `NOPASSWD` rule, and running the
+server as root to avoid that would be worse than the problem. And `sudo` *does* relay
+`SIGINT`, which is what lets the timeout escalation keep working: signalling across uids
+is normally forbidden, and without the relay every timeout would have had to destroy the
+session's state.
+
+What this does not do is confine syscalls. Landlock and seccomp would add that, and
+remain undone; `run_as` gives filesystem and process isolation, which is the part that
+matters most for an interpreter that would otherwise be able to read `~/.ssh`.
 
 Two other honest limits. Secrets are stored under filesystem permissions only; the
 standard library ships no cipher, and rolling one would read as protection while
