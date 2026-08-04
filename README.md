@@ -8,10 +8,9 @@ writes Python and runs it in a persistent interpreter — with loops, conditiona
 handling, and composition. Large intermediates stay as variables rather than passing
 through the context window.
 
-Alongside it there's a curated library of helper functions, discoverable the way MCP
-tools are. See [DESIGN.md](DESIGN.md) for the full plan; this repo currently implements
-**phases 1 and 2** — the interpreter, and the helper format with task-driven discovery.
-The proposal and approval machinery that lets the library *grow* is phase 3.
+Alongside it, a curated library of helper functions that **accumulates**: the agent
+proposes, a human approves, and the library is discoverable ever after — the way MCP
+tools are. See [DESIGN.md](DESIGN.md) for the reasoning behind every decision.
 
 ## Install
 
@@ -39,8 +38,20 @@ virtualenv, and nothing to build.
 | `run_python` | Execute Python in the persistent session interpreter |
 | `search_helpers` | Find helpers for a task, filtered by job and domain |
 | `describe_helper` | The full usage contract for one helper |
+| `propose_helper` | Submit a helper for review. Installs nothing. |
+| `helper_source` | Read an implementation — only to revise it |
+| `request_capability` | Ask for a privileged capability, session-only |
 | `session_state` | List every bound name with its type and a short summary |
 | `restart_session` | Discard the interpreter and start fresh |
+
+And four commands for you, not the agent:
+
+```
+python3 tools/review.py     # approve or reject proposals in a browser
+python3 tools/mine.py       # what the corpus suggests the library is missing
+python3 tools/secret.py     # manage secrets helpers may use
+python3 tools/check.py      # validate helpers, capture example output
+```
 
 Plus a `codeact` skill that teaches the working loop and fires on multi-step data, file,
 parsing, and API tasks.
@@ -131,17 +142,84 @@ python3 tools/describe.py <name>     # print a card exactly as the agent sees it
 python3 tools/describe.py --index    # the job index and the whole catalog
 ```
 
+## How the library grows
+
+The agent calls `propose_helper` with a complete module. That **installs nothing** — it
+records a pending proposal and runs the whole gate, so your review is spent on judgement
+rather than on catching missing type hints. You approve in the browser:
+
+```
+python3 tools/review.py
+```
+
+Each candidate shows its card, its source, its declared reach, and a **trial run**. The
+trial executes in a scratch directory with no credentials, under `sys.addaudithook`, and
+reports *what the code touched* — files written, hosts contacted, processes spawned.
+Output alone tells you a candidate is plausible; the effect report is what tells you it
+does nothing else, and that second half is the part that actually needs a human.
+
+A revision that **increases** a helper's reach — gaining network access, or a secret — is
+flagged on its own rather than left to be spotted in a source diff. A trusted helper
+quietly gaining reach looks identical whether the cause is malice or a confused agent.
+
+### Mining
+
+`python3 tools/mine.py` reads the corpus and produces four queues. New candidates are the
+obvious one. The valuable one is **retrieval failures**: inline code that re-implements a
+helper you already have, which means the library was fine and *discovery* broke. Those are
+two different problems with two different fixes, and they are otherwise indistinguishable.
+The other two queues are helpers failing often enough to need revision, and helpers
+nothing has called.
+
+Ranking does not use raw frequency. Five uses in one session is one task; five sessions is
+a habit; five *projects* is unambiguously a library function. Code that had to be fixed
+before it worked ranks higher too, because the helper bakes in a correction that was
+expensive to find once.
+
 ## The guard
 
 A static AST pass classifies what each block touches into capability tiers — tier 0 is the
 pure standard library and all syntax, tier 1 is read-only filesystem access, tier 2 is
 network, subprocess and dynamic execution, tier 3 is sandbox-escape attribute traversal.
 
-**It currently runs in audit mode: everything is recorded, nothing is blocked.** The tier
-boundaries are informed guesses, and the audit log is what will correct them before
-enforcement is switched on. It is also a *policy* layer, not a security boundary — Python
-cannot be securely sandboxed in-process, and containment is a later phase's job (see
-DESIGN.md §9).
+**It ships in audit mode: everything is recorded, nothing is blocked.** The tier boundaries
+are informed guesses and the audit log is what corrects them. Turn it on when you're ready:
+
+```json
+// ~/.codeact/config.json
+{"guard": "enforce"}
+```
+
+Enforcement refuses with a structured message naming two ways forward — request the
+capability for this session, or **package the work as a reviewed helper**. The second is
+usually right, and it is the point: the friction of the boundary is what channels
+privileged work into named, reviewed, reusable units, so every wall the agent hits is an
+invitation to propose something.
+
+> **This is a policy layer, not a security boundary.** Python cannot be securely sandboxed
+> in-process — attribute traversal, `__globals__`, deserialization — and pretending
+> otherwise would be worse than saying so. The interpreter runs with your full user
+> privileges, the same as `Bash` already grants. Real containment (Landlock, seccomp) is
+> designed in DESIGN.md §9 and **not implemented**.
+
+## Secrets
+
+A helper declares `requires_secrets=["GITHUB_TOKEN"]`, and approving that helper approves
+that specific pairing — the token being reachable by one helper says nothing about
+anything else. The agent never sees a value.
+
+Three layers, because none alone is enough: a secret is never bound in the namespace; a
+`Secret` wrapper redacts through `str`, `repr` and f-strings; and everything leaving the
+interpreter is scanned and redacted. That last one is what matters most — an exception
+inside an HTTP library will happily print the auth header it was called with, and that
+path bypasses the wrapper entirely.
+
+```
+python3 tools/secret.py set GITHUB_TOKEN
+```
+
+> Stored under filesystem permissions only (0600). The standard library ships no cipher,
+> and rolling one here would read as protection while providing none.
 
 ## What's recorded
 
