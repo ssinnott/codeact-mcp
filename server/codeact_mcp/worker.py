@@ -16,6 +16,7 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import sys
 import traceback
 import types
@@ -67,8 +68,9 @@ def _is_noise(name: str, value: object) -> bool:
     """
     return (
         name.startswith("__")
-        or name in ("_", "_out")
+        or name in ("_", "_out", "helpers")
         or isinstance(value, types.ModuleType)
+        or getattr(value, "__codeact__", None) is not None
     )
 
 
@@ -170,6 +172,23 @@ def execute(ns: dict, code: str) -> dict:
     }
 
 
+def _preload() -> dict:
+    """Bind approved helpers into the namespace so code can just call them.
+
+    Best effort: a broken helper library must never stop the interpreter from
+    starting, or one bad file would take away plain Python too.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+        from codeact_mcp.facade import Helpers
+        from codeact_mcp.registry import registry
+
+        reg = registry()
+        return {**reg.namespace(), "helpers": Helpers(reg)}
+    except Exception:
+        return {}
+
+
 def main() -> None:
     # Move the protocol channel off fd 1 before running anything untrusted.
     protocol = os.fdopen(os.dup(1), "w", buffering=1)
@@ -178,6 +197,7 @@ def main() -> None:
     sys.stdout = io.TextIOWrapper(open(os.devnull, "wb"), write_through=True)
 
     ns: dict = {"__name__": "__codeact__", "__builtins__": __builtins__}
+    ns.update(_preload())
 
     for line in sys.stdin:
         line = line.strip()

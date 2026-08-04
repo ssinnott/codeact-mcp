@@ -1,0 +1,17 @@
+{
+  "captured": [
+    {
+      "code": "read_jsonl(str(_p))",
+      "note": "blank lines are skipped by default",
+      "output": "[{'id': 1, 'ok': True}, {'id': 2, 'ok': False}]",
+      "ok": true
+    },
+    {
+      "code": "read_jsonl(str(_p), skip_blank=False)",
+      "note": "with skip_blank=False a blank line is treated as corruption",
+      "output": "json.decoder.JSONDecodeError: Expecting value (line 2 of /tmp/tmpo95n1glm/demo.jsonl): line 2 column 1 (char 1)",
+      "ok": true
+    }
+  ],
+  "source_hash": "d3e6bb9a6cd86549"
+}

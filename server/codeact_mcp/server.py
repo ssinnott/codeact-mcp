@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import time
 
-from . import corpus, guard, paths
+from . import corpus, guard, paths, search as search_mod, taxonomy
 from .interpreter import Session, Timeout
 from .protocol import Server
+from .registry import registry
 
 VERSION = "0.1.0"
 DEFAULT_TIMEOUT = 30.0
@@ -132,6 +134,88 @@ def build() -> Server:
             return "The interpreter namespace is empty."
         lines = [f"{n['name']} ({n['type']}) {n['repr']}" for n in names]
         return f"{len(lines)} name(s) bound:\n" + "\n".join("  " + line for line in lines)
+
+    @server.tool(
+        "search_helpers",
+        (
+            "Find approved helper functions relevant to a task. Check this before "
+            "writing non-trivial code — the library is where solved problems live, and "
+            "rewriting one of them by hand is wasted work. Returns one line per helper: "
+            "signature, summary, and its job/domain tags. Call describe_helper for the "
+            "full contract of anything that looks right.\n\n"
+            "Classify the task yourself and pass the categories — jobs are: "
+            + ", ".join(taxonomy.JOBS)
+            + "."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "What you are trying to do, in your own words.",
+                },
+                "jobs": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": sorted(taxonomy.JOBS)},
+                    "description": "Restrict to these job categories.",
+                },
+                "domains": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": sorted(taxonomy.DOMAINS)},
+                    "description": "Restrict to these subject domains.",
+                },
+            },
+        },
+    )
+    def search_helpers(
+        task: str = "", jobs: list | None = None, domains: list | None = None
+    ) -> str:
+        reg = registry()
+        found = search_mod.search(
+            reg.available(),
+            task=task,
+            jobs=jobs or (),
+            domains=domains or (),
+            project=os.getcwd(),
+        )
+        if not found:
+            counts = reg.counts_by_job()
+            if not sum(counts.values()):
+                return (
+                    "The helper library is empty. Write plain Python for now.\n\n"
+                    "Jobs available for future helpers:\n" + taxonomy.job_index()
+                )
+            shape = " · ".join(f"{j} ({n})" for j, n in sorted(counts.items()))
+            return f"Nothing matched. The library holds: {shape}"
+        lines = [e.card.index_line() for e in found]
+        return (
+            f"{len(lines)} helper(s), most relevant first:\n"
+            + "\n".join("  " + line for line in lines)
+            + "\n\nCall describe_helper(name) for the full contract before using one."
+        )
+
+    @server.tool(
+        "describe_helper",
+        (
+            "Get the full usage contract for one helper: what it is for, when not to "
+            "use it, every parameter, the shape of what it returns, how it fails, and "
+            "worked examples whose output was captured from real runs. This contract is "
+            "the complete interface — read it rather than guessing from the signature."
+        ),
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "The helper's name."}},
+            "required": ["name"],
+        },
+    )
+    def describe_helper(name: str) -> str:
+        reg = registry()
+        entry = reg.get(name)
+        if entry is None:
+            close = [n for n in reg.namespace() if name.lower() in n.lower()]
+            hint = f" Did you mean: {', '.join(sorted(close))}?" if close else ""
+            return f"No helper named {name!r}.{hint} Use search_helpers to look."
+        return entry.card.render()
 
     @server.tool(
         "restart_session",
