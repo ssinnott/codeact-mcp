@@ -52,7 +52,9 @@ codeact-mcp/                        # this repo = the plugin
     ├── cards.py          # compile + validate usage contracts, run contract tests
     ├── validate.py       # the proposal gate
     ├── corpus.py         # log every executed block + outcome
-    └── miner.py          # offline: fingerprint, cluster, rank, synthesize
+    ├── secrets.py        # encrypted store, Secret wrappers, egress redaction
+    ├── miner.py          # offline: fingerprint, cluster, rank, synthesize
+    └── review/           # `codeact review` — local web app, stdlib server + one HTML file
 ```
 
 Helpers do **not** live in this repo. They accumulate in the *consuming* project:
@@ -64,6 +66,9 @@ Helpers do **not** live in this repo. They accumulate in the *consuming* project
 ├── corpus.jsonl             # every executed block + outcome (local, gitignored)
 └── fingerprints.db          # normalized AST hashes for cross-session mining
 ```
+
+Secrets deliberately live **nowhere near** either of those trees — encrypted, outside the
+repo, keyed from the OS keyring (§10).
 
 Two scopes: **project** (`./.codeact/`, checked in, shared with the team) and **user**
 (`${CLAUDE_PLUGIN_DATA}`, personal, survives plugin updates). The catalog merges both;
@@ -529,27 +534,153 @@ round trips to fix.
 
 ---
 
-## 10. Suggested build order
+## 10. Secrets
+
+The requirement — the agent must never see a secret, but an approved helper must be able
+to use one — is exactly the capability delegation from §9, applied to data instead of
+syscalls. Helpers already run elevated because a human read them. Secrets extend that:
+**approving a helper is also approving its access to the specific secrets it declared.**
+
+### The binding
+
+A helper declares `requires_secrets: [GITHUB_TOKEN]` in its card. That declaration is part
+of what the human approves, so authorization is a `(secret, helper)` pair, not a global
+grant. `GITHUB_TOKEN` being available to `fetch_pr_diff` says nothing about whether it's
+available to anything else. That's the "only usable by the calling function" property, and
+it falls out of the gate we already have rather than needing new machinery.
+
+The card documents the requirement as a precondition, so the agent knows a helper needs
+auth without ever learning what the credential is.
+
+### Three layers, because one isn't enough
+
+**1. Never in the namespace.** The secret is not a variable. Agent-authored code has no
+name bound to it, and `session_state()` cannot surface it. `secrets.get()` exists but is
+callable only from trusted helper module code — checked by walking the calling frame back
+to its defining module and testing it against the approved-helper registry. Agent code
+executed via `exec` has a distinguishable frame identity, so this is a real check, with
+the same honest caveat as the AST guard: it stops accidental and casual access, and it is
+not the security boundary.
+
+**2. Opaque wrappers.** What `secrets.get()` returns is a `Secret` object whose `__str__`,
+`__repr__`, and `__format__` all yield `<secret:GITHUB_TOKEN>`. The plaintext resolves
+only at a trusted call boundary. This is aimed squarely at the dominant real-world failure
+mode, which is not exfiltration but *accident* — a credential landing in a log line, an
+f-string, or a traceback.
+
+**3. Egress redaction.** Everything leaving the interpreter for the model — stdout,
+stderr, tracebacks, the namespace delta, the corpus log — is scanned against the known
+secret values and redacted before the model sees it. A plain substring scan is enough and
+costs nothing. **Tracebacks are the critical case**: an exception raised inside an HTTP
+library will happily print the auth header it was called with, and that path bypasses
+every wrapper in layer 2. This backstop is what makes the other two layers survivable.
+
+### The strong version
+
+The architecturally correct answer is that **the secret never enters the interpreter
+process at all**. Helpers don't receive credentials; they ask a broker in the server
+process to perform the privileged operation, and the broker attaches auth itself. For HTTP
+this is clean — a signing proxy that adds headers the sandbox never sees — and it composes
+with the layer-2 containment from §9, since the worker then has no credential to leak
+regardless of what runs inside it.
+
+I'd ship layers 1–3 first because they're cheap and cover accident, and treat the broker
+as the hardening step for anything genuinely sensitive. Worth being explicit in the README
+about which mode is on, the same as with the sandbox tiers.
+
+### Storage and audit
+
+Encrypted at rest with an AEAD, keyed from the OS keyring where one exists — encryption,
+not obfuscation. Each secret gets a random opaque handle so a name can't be guessed.
+Stored outside the repo, never in `.codeact/`, never in git. Every access is logged with
+the helper that made it and when, which feeds the same review surfaces as everything else:
+a helper that starts reading a secret it never used before is exactly the kind of drift a
+human should see.
+
+---
+
+## 11. The review app
+
+The queues from §6 need somewhere to be processed, and a terminal prompt is the wrong
+shape for it — reviewing a candidate means reading a card, reading source, seeing the
+evidence that produced it, and watching it actually run. That's a UI.
+
+A local web app, launched by `codeact review`, which starts an HTTP server bound to
+127.0.0.1 with a random token in the URL and opens a browser. Deliberately a **separate
+process from the MCP server**: reviewing is the human's activity, it shouldn't require an
+active Claude session, and the MCP server is stdio-bound and per-session anyway. Both read
+and write the same `.codeact/` directory.
+
+Keep it dependency-light and buildless — stdlib HTTP server, one HTML file, fetch calls.
+The whole point is that it starts instantly and has no toolchain.
+
+### What a candidate looks like on screen
+
+- the **card** as the agent will see it, rendered exactly as delivered
+- the **source**, which the human reads and the agent never does (§5)
+- the **evidence**: the inline occurrences the miner clustered, with session and date, so
+  "this pattern appeared in six sessions over three weeks" is visible rather than asserted
+- the **ranking signals** that surfaced it, and the gate's validation results
+- declared **capabilities and secrets**, which is what's actually being granted
+
+### Running a candidate is the dangerous part
+
+The Run button is the single biggest hole in this design if built naively, and it's worth
+naming that plainly: a pending candidate is **unreviewed code**, and the trial run is the
+moment a human is most inclined to execute it without thinking, precisely because they're
+trying to decide whether to trust it. So:
+
+- Trial runs execute under the **strictest containment tier** (§9 layer 2), not the tier a
+  normal session uses.
+- They run against a **scratch copy** of the project — temp dir or git worktree — so
+  writes can't touch anything real.
+- Declared capabilities are granted **provisionally and individually**, each OK'd by the
+  reviewer before the run.
+- **Real secrets are never supplied by default.** Placeholders unless the reviewer
+  explicitly opts in, per run. Otherwise "let me just test it" becomes the exfiltration
+  path, and it's the most plausible way this whole design gets someone's token stolen.
+
+### Show side effects, not just output
+
+The output alone doesn't tell you a candidate is safe — it tells you it's *plausible*. So
+a trial run produces a **side-effect report** next to the return value: files read and
+written, hosts contacted, processes spawned, secrets touched. That's what lets a reviewer
+conclude both "it works" and "it does nothing else," and the second half is the one that
+actually needs a human.
+
+### The trial run feeds the card
+
+One nice consequence: the card's examples are the default test inputs, one click runs them
+all, and their **real captured output becomes the card's documented output** on approval.
+The mechanism that convinces the human it works is the same mechanism that makes the
+documentation ground truth (§5). The reviewer's confidence and the agent's contract come
+from a single execution.
+
+---
+
+## 12. Suggested build order
 
 | Phase | Ships | Why here |
 |---|---|---|
 | 1 | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
 | 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
-| 3 | `propose_helper`, validation gate, approval surfaces, **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
-| 4 | layer 2 containment (Landlock + seccomp), capability grants, dependency install | the real boundary, once the policy layer has proven its tiers |
-| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues, promote/demote, user scope | makes accumulation self-sustaining — and by now there's a corpus worth mining |
+| 3 | `propose_helper`, validation gate, **review app v1** (card, source, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
+| 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
+| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, promote/demote, user scope | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 
-Phase 1 is a day. Phases 2–3 are where the design risk is. Three sequencing points worth
+Phase 1 is a day. Phases 2–3 are where the design risk is. Four sequencing points worth
 keeping: phase 2 uses hand-written helpers so we can measure whether task-driven discovery
 works before building the machinery that generates the content; guard enforcement waits
 for phase 3 because a wall with no door is just a broken tool, so the escalation path has
-to exist before the blocking does; and both the corpus and the guard's audit log start
+to exist before the blocking does; both the corpus and the guard's audit log start
 recording in phase 1 despite nothing reading them until phases 3–5, because history is the
-one thing that can't be backfilled.
+one thing that can't be backfilled; and the review app's Run button stays confined to a
+scratch directory with no credentials until phase 4 ships real containment, because a
+trial run of unreviewed code is the least safe thing in the system (§11).
 
 ---
 
-## 11. Open questions
+## 13. Open questions
 
 1. **How often should the miner run, and does it need a budget?** Batch review is now the
    default surface (§6 track 2 lands there), which settles the friction question, but not
@@ -576,5 +707,14 @@ one thing that can't be backfilled.
    recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
    then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
    and probably a phase 5+ question rather than something to design in now.
-5. **Sandbox default.** Tier 0 matches what Bash already permits and keeps setup at
-   zero; tier 2 is defensible but adds Docker/uv as a hard dependency.
+8. **How do secrets get in, and how does a team share the *names*?** Project-scope helpers
+   are committed and reference secrets by name, so a teammate cloning the repo gets a
+   helper that declares `GITHUB_TOKEN` and no way to know what to put there. Some manifest
+   of required-but-unset secrets seems necessary, plus a way to populate them
+   (`codeact secret set`, import from env, keyring passthrough).
+9. **Who can approve a project-scope helper?** Approving one writes a file that gets
+   committed and then runs on every teammate's machine with whatever capabilities it
+   declared. That's a supply-chain decision dressed up as a UI click. It may be that
+   project-scope approval should produce a *pull request* rather than a commit, so it
+   inherits the code review the repo already has, and only user-scope helpers approve
+   instantly in the app.
