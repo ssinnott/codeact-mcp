@@ -491,6 +491,26 @@ human can `@`-mention one directly, and **in-interpreter** discovery (`helpers.b
 `help()`, real docstrings on the preloaded functions) so code-driven lookup works without
 leaving the code channel.
 
+### What the phase-2 evals actually measured
+
+Both evals ran against the twelve seed helpers. Recording the numbers here because they
+are the evidence for design decisions made above, not decoration:
+
+| metric | result |
+|---|---|
+| retrieval hit@1 | 12/12 after making domain a ranking signal (11/12 before) |
+| card sufficiency, code runs | 10/10 of well-formed submissions, from the card alone |
+| reader judged the card enough | 11/12 |
+| gaps readers reported anyway | 73 across 12 cards |
+
+The last row is the one that matters. Code that runs is a weak signal — a reader can
+guess right. The 73 specific complaints, filed by readers who *did* produce working code,
+are what showed the cards were thinner than they looked, and they found a defect class the
+gate cannot see: a bare `str` satisfies `Sequence[str]` and `Collection[str]`, so
+`ignore="owner"` type-checks and then silently iterates characters. Three separate helpers
+had it. **Type-correct and silently wrong is invisible to both the validator and the
+contract tests**, which is a real limit on how much the gate can promise.
+
 ### Does any of this actually work?
 
 Categorization schemes are easy to design and hard to validate, so this needs numbers
@@ -773,7 +793,7 @@ from a single execution.
 | Phase | Ships | Why here |
 |---|---|---|
 | 1 ✅ | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
-| 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
+| 2 ✅ | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
 | 3 | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
 | 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
@@ -806,9 +826,16 @@ trial run of unreviewed code is the least safe thing in the system (§11).
    audit mode produces real data. Specifically unresolved: is `subprocess` tier 2 when
    `Bash` is already granted at the Claude Code level, and does read access really extend
    to the whole project root or only to tracked files?
-5. **Is the eight-job vocabulary right?** It's a guess, and the honest way to find out is
-   to categorize thirty real helpers by hand and see which ones resist classification or
-   land in `orchestrate` because nothing else fit.
+5. **Is the eight-job vocabulary right?** Partly answered by phase 2. Twelve hand-written
+   helpers classified without strain, and the retrieval eval scored 100% hit@1 across a
+   12-task gold set — but only after **domain stopped being a hard filter**. The helper
+   that resisted was exactly the predicted one: `retry_call` sits in `orchestrate` and has
+   no honest domain, since it wraps any callable, so a perfectly reasonable
+   `domains=["http"]` guess excluded the one right answer that plain ranking put first.
+   Jobs stay a hard filter; domain is now a ranking boost. `orchestrate` also needed a
+   side-effect value of its own (`inherits`), because "none" was a lie for a helper whose
+   purpose is invoking arbitrary caller code. Still open at thirty helpers rather than
+   twelve.
 6. **Does "breaking change means a new name" hold up in practice?** It's what lets the
    design skip versioning entirely (§6), and the reasoning is sound — a helper's callers
    are future sessions reading a fresh card, so there's nothing to migrate. The risk is
