@@ -96,13 +96,40 @@ one-off shell commands. Reach for Python when the work composes.
 Print what you need to see and nothing else. If output is truncated, the full text
 is in `_out`, so you can slice it instead of re-running the call.
 
-## When a helper is missing or wrong
+## Growing the library
 
-If you find yourself writing the same non-trivial block for the second or third
-time, say so plainly in your reply — that is what the library should absorb, and
-those observations are how it grows.
+When you have written the same non-trivial block more than once, call
+`propose_helper`. It installs nothing — a human reviews it — so proposing is cheap
+and costs the task nothing.
 
-If a helper's behaviour contradicts its card, **report that rather than working
-around it**. Quietly writing your own corrected copy hides a defect that would
-otherwise get fixed once, for everyone. The card is meant to be trustworthy; a
-place where it isn't is worth more as a bug report than as a workaround.
+The test: *would a future session, with no memory of this task, be better off?*
+Propose when the interface is stable and it isn't already a helper. Don't propose a
+one-liner around stdlib, or something so task-specific nobody would find it again.
+
+Write the docstring as though it is the only thing anyone will ever read about the
+function, **because it is** — whoever calls it later sees the card and never the
+code. That means: a summary saying what it is *for*, `Use when:` and
+`Don't use when:`, every parameter under `Args:`, the *shape* of the result under
+`Returns:` (`list of {sha, author, date}`, not `list[dict]`), failure modes under
+`Raises:`, and at least one example. Examples are executed and their real output is
+recorded into the card, so they must actually run.
+
+## When the guard blocks you
+
+If enforcement is on and your code needs network, a subprocess, or another
+privileged capability, you get a refusal naming two routes. Prefer
+`propose_helper`: an approved helper carries its capability permanently and every
+later session benefits, where `request_capability` lasts only this session and asks
+the human every time.
+
+## When a helper is wrong
+
+If behaviour contradicts the card, **report it rather than working around it**.
+`helper_source` exists so you can read the code and propose a fix with
+`propose_helper(..., revises=<name>)` — not so you can write your own corrected
+copy inline. A silent local workaround hides a defect that would otherwise be fixed
+once, for everyone, and the miner will later rediscover your copy as a duplicate of
+something that already exists.
+
+Prefer adding an optional argument over a breaking change. A genuinely breaking
+change is a new helper with a new name, not a revision.

@@ -39,22 +39,32 @@ prints `df.head()`, not the frame.
 codeact-mcp/                        # this repo = the plugin
 ├── .claude-plugin/plugin.json      # plugin manifest (only `name` is required)
 ├── .mcp.json                       # bundled server, launched via ${CLAUDE_PLUGIN_ROOT}
-├── skills/
-│   ├── codeact/SKILL.md            # model-invoked: teaches the loop + when to propose
-│   └── review/SKILL.md             # user-invoked (/codeact:review) approval surface
-├── hooks/hooks.json                # session-start catalog injection
-├── agents/codeact.md               # optional subagent that works in this style
+├── skills/codeact/SKILL.md         # teaches the loop, discovery, and when to propose
+├── seeds/<name>.py                 # helpers shipped with the plugin, read-only
+├── tools/                          # human surfaces, not agent tools
+│   ├── review.py + review.html     # the approval app: cards, diffs, trial runs
+│   ├── mine.py                     # the four queues, from the corpus
+│   ├── approve.py                  # approve or reject from a terminal
+│   ├── secret.py                   # manage secrets helpers may use
+│   ├── check.py / describe.py      # run the gate; print a card as the agent sees it
+│   └── eval_cards.py / eval_retrieval.py
 └── server/codeact_mcp/             # the MCP server (Python, stdio)
     ├── server.py         # MCP tool surface
+    ├── protocol.py       # hand-rolled JSON-RPC, so there are no dependencies
     ├── interpreter.py    # session manager, timeouts, restarts
-    ├── worker.py         # the actual exec sandbox subprocess
+    ├── worker.py         # the interpreter subprocess
     ├── registry.py       # helper storage, load, preload into namespace
-    ├── cards.py          # compile + validate usage contracts, run contract tests
-    ├── validate.py       # the proposal gate
+    ├── cards.py          # parse, validate and render usage contracts
+    ├── contract.py       # run examples, capture output, detect drift
+    ├── proposals.py      # the gate, and the only path from proposed to callable
+    ├── trial.py          # audited trial runs for the review app
+    ├── guard.py          # capability tiers, enforcement, refusals
+    ├── secrets_store.py  # Secret wrapper, access control, egress redaction
     ├── corpus.py         # log every executed block + outcome
-    ├── secrets.py        # encrypted store, Secret wrappers, egress redaction
-    ├── miner.py          # offline: fingerprint, cluster, rank, synthesize
-    └── review/           # `codeact review` — local web app, stdlib server + one HTML file
+    ├── search.py         # filter and rank
+    ├── taxonomy.py       # the closed job and domain vocabularies
+    ├── config.py         # ~/.codeact/config.json
+    └── miner.py          # fingerprint, cluster, rank, the four queues
 ```
 
 Helpers do **not** live in this repo, and — for now — they don't live in the consuming
@@ -72,8 +82,8 @@ project either. **One library per machine, in the home directory:**
 history, revision diffs, and rollback into solved problems rather than features (§6). The
 corpus stays untracked — it churns constantly and can contain sensitive strings.
 
-Secrets deliberately live **nowhere near** that tree — encrypted, keyed from the OS
-keyring (§10).
+Secrets deliberately live **nowhere near** that tree — `~/.codeact-secrets.json`, owner-
+readable only (§10).
 
 Single scope, deliberately. Sharing a library across a team is a genuinely harder problem
 (approval becomes a supply-chain decision, secrets need a name manifest, and two people can
