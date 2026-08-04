@@ -10,8 +10,8 @@ The spine of the design is one distinction:
   variables — they live in the interpreter, never in the context window, and die with
   the session.
 - **Helpers are durable.** When the agent notices it has solved the same sub-problem
-  more than once, it proposes a function. A human approves it. It lands in the repo and
-  is discoverable forever after.
+  more than once, it proposes a function. A human approves it. It lands in the library
+  and is discoverable forever after, in every project.
 
 Everything below serves that split.
 
@@ -57,22 +57,35 @@ codeact-mcp/                        # this repo = the plugin
     └── review/           # `codeact review` — local web app, stdlib server + one HTML file
 ```
 
-Helpers do **not** live in this repo. They accumulate in the *consuming* project:
+Helpers do **not** live in this repo, and — for now — they don't live in the consuming
+project either. **One library per machine, in the home directory:**
 
 ```
-<user project>/.codeact/
-├── helpers/<name>.py        # code + its card, one file — reviewable, diffable, tracked
+~/.codeact/
+├── helpers/<name>.py        # code + its card, one file each
 ├── proposals/<id>.json      # pending, awaiting human approval
-├── corpus.jsonl             # every executed block + outcome (local, gitignored)
+├── corpus.jsonl             # every executed block + outcome, across all projects
 └── fingerprints.db          # normalized AST hashes for cross-session mining
 ```
 
-Secrets deliberately live **nowhere near** either of those trees — encrypted, outside the
-repo, keyed from the OS keyring (§10).
+Secrets deliberately live **nowhere near** that tree — encrypted, keyed from the OS
+keyring (§10).
 
-Two scopes: **project** (`./.codeact/`, checked in, shared with the team) and **user**
-(`${CLAUDE_PLUGIN_DATA}`, personal, survives plugin updates). The catalog merges both;
-project wins on a name collision.
+Single scope, deliberately. Sharing a library across a team is a genuinely harder problem
+(approval becomes a supply-chain decision, secrets need a name manifest, and two people can
+approve conflicting helpers), and none of it needs solving to find out whether the core
+idea works. Punt it.
+
+Two consequences worth planning around, one good and one to watch:
+
+**Good:** the corpus now spans every project on the machine, so the miner (§6) sees far
+more history, sooner — and it gains a genuinely strong signal it wouldn't otherwise have.
+A pattern recurring across *several different projects* is much more clearly a real
+reusable helper than one recurring inside a single project, which is often just one task's
+shape repeated.
+
+**To watch:** a helper mined from one project can pollute the catalog for every other one.
+Retrieval needs to know which project it's in (§7).
 
 ---
 
@@ -219,7 +232,9 @@ if those two underdeliver; I'd not start there.
 
 *Rank.* Frequency alone is a bad signal. What actually predicts a good helper:
 
-- **spread across sessions** — five uses in one session is one task; five sessions is a habit
+- **spread across sessions, and across projects** — five uses in one session is one task;
+  five sessions is a habit; five *projects* is unambiguously a library function, and with
+  a single home-dir corpus (§2) that signal is available for free
 - **failure cost** — code that errored and needed fixing before it worked is high-value to
   encapsulate, because the helper bakes in the correction that was expensive to find
 - **shape stability** — if the pattern is still churning between sessions it's premature
@@ -300,8 +315,8 @@ there rather than through a bare permission prompt.
 proposals as cards with source and diff, for people who'd rather approve five at once
 than one at a time mid-task. Nothing installs without a human keystroke either way.
 
-**Promote / demote.** Approval has two scopes: **session** (provisional — usable now,
-disappears at session end) and **permanent** (written to `.codeact/helpers/`, git-tracked).
+**Promote / demote.** Approval has two lifetimes: **session** (provisional — usable now,
+disappears at session end) and **permanent** (written to `~/.codeact/helpers/`).
 Telemetry drives movement: a provisional helper used successfully N times is offered for
 promotion; a permanent helper that keeps raising exceptions gets flagged for revision.
 
@@ -367,6 +382,13 @@ needs no embedding infrastructure. **The server does exact set filtering and ran
 BM25 over name, summary and purpose for the free-text part, then ordering by telemetry
 priors: usage count, success rate, recency, and co-occurrence with helpers already called
 this session.
+
+Because the library is machine-wide (§2), **project affinity** joins that ranking: a
+helper that has only ever been used in one project ranks low everywhere else, while one
+used across several ranks as genuinely general. This is what stops a single-purpose helper
+mined out of one codebase from cluttering the catalog for every other one. It's a ranking
+signal rather than a filter, so a helper can still be found outside its home project when
+it's genuinely the right answer — it just doesn't lead with it.
 
 So the flow at task start is: agent classifies the task from the job index it already
 has, calls `search_helpers(task="…", jobs=[…], domains=[…])`, gets a small ranked slice,
@@ -478,7 +500,7 @@ process spawning (`subprocess`, `os.system`), writes outside the project root, `
 
 **Tier 3 — refused outright**, absent an explicit config override: dunder traversal used
 for escape (`__class__`/`__bases__`/`__subclasses__`/`__globals__`/`__mro__`), and any
-write to `.codeact/` itself. The agent must not be able to edit the guard, the approved
+write to `~/.codeact/` itself. The agent must not be able to edit the guard, the approved
 helpers, or the proposal queue — that's the one privilege escalation that breaks the
 entire model.
 
@@ -592,7 +614,7 @@ about which mode is on, the same as with the sandbox tiers.
 
 Encrypted at rest with an AEAD, keyed from the OS keyring where one exists — encryption,
 not obfuscation. Each secret gets a random opaque handle so a name can't be guessed.
-Stored outside the repo, never in `.codeact/`, never in git. Every access is logged with
+Stored outside `~/.codeact/` and never in any repo. Every access is logged with
 the helper that made it and when, which feeds the same review surfaces as everything else:
 a helper that starts reading a secret it never used before is exactly the kind of drift a
 human should see.
@@ -609,7 +631,7 @@ A local web app, launched by `codeact review`, which starts an HTTP server bound
 127.0.0.1 with a random token in the URL and opens a browser. Deliberately a **separate
 process from the MCP server**: reviewing is the human's activity, it shouldn't require an
 active Claude session, and the MCP server is stdio-bound and per-session anyway. Both read
-and write the same `.codeact/` directory.
+and write the same `~/.codeact/` directory.
 
 Keep it dependency-light and buildless — stdlib HTTP server, one HTML file, fetch calls.
 The whole point is that it starts instantly and has no toolchain.
@@ -666,7 +688,7 @@ from a single execution.
 | 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
 | 3 | `propose_helper`, validation gate, **review app v1** (card, source, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
-| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, promote/demote, user scope | makes accumulation self-sustaining — and by now there's a corpus worth mining |
+| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 
 Phase 1 is a day. Phases 2–3 are where the design risk is. Four sequencing points worth
 keeping: phase 2 uses hand-written helpers so we can measure whether task-driven discovery
@@ -707,14 +729,12 @@ trial run of unreviewed code is the least safe thing in the system (§11).
    recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
    then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
    and probably a phase 5+ question rather than something to design in now.
-8. **How do secrets get in, and how does a team share the *names*?** Project-scope helpers
-   are committed and reference secrets by name, so a teammate cloning the repo gets a
-   helper that declares `GITHUB_TOKEN` and no way to know what to put there. Some manifest
-   of required-but-unset secrets seems necessary, plus a way to populate them
-   (`codeact secret set`, import from env, keyring passthrough).
-9. **Who can approve a project-scope helper?** Approving one writes a file that gets
-   committed and then runs on every teammate's machine with whatever capabilities it
-   declared. That's a supply-chain decision dressed up as a UI click. It may be that
-   project-scope approval should produce a *pull request* rather than a commit, so it
-   inherits the code review the repo already has, and only user-scope helpers approve
-   instantly in the app.
+8. **How do secrets get in?** `codeact secret set`, import from the environment, keyring
+   passthrough — and what happens when a helper declares a secret that isn't set yet. The
+   card should probably surface it as an unmet precondition rather than failing at call
+   time with something opaque.
+9. **When a helper is obviously project-specific, what then?** Project affinity (§7) keeps
+   it from cluttering other projects' retrieval, but it's a ranking fix for a modelling
+   gap. If this turns out to be common rather than rare, per-project libraries come back
+   as a real requirement — the deferred sharing question (§2) returning by a different
+   road.
