@@ -77,9 +77,9 @@ Deliberately small — every tool costs context in every session.
 - `run_python(code, timeout_s=30)` → stdout, stderr, traceback, last-expression repr,
   **and a namespace delta**: names created/changed with type and a short repr. The delta
   is what lets the agent keep track of state without printing it.
-- `search_helpers(query?, tags?)` → compact index, one line per helper:
-  `name(sig) — summary [tags]`. This is the front door, and it deliberately mirrors how
-  the agent discovers MCP tools.
+- `search_helpers(task?, jobs?, domains?)` → a ranked slice of the index, one line per
+  helper: `name(sig) — summary [job/domains]`. The front door, and deliberately the same
+  ergonomics as discovering MCP tools. See §6 for how the slice is chosen.
 - `read_helper(name)` → full source, purpose, examples. Progressive disclosure: the
   index is cheap, bodies are pulled only when needed.
 - `propose_helper(name, source, purpose, tags, side_effects, examples)` → runs the
@@ -135,6 +135,9 @@ volunteers "you've written this three times — consider proposing it."
 - it declares `side_effects` (`none` / `filesystem` / `network` / `process`) and the
   declaration matches a static scan of the source; a mismatch is an outright rejection,
   and anything non-`none` raises the approval's severity
+- it declares exactly one `job` and one to three `domains` from the vocabularies in §6,
+  and the job is consistent with the declared side effects (a `parse` helper that opens
+  a socket is misfiled, and that's worth catching before a human reads it)
 - it ships at least one runnable example, executed in a scratch session as a smoke test
 - it isn't a near-duplicate of an existing helper (cheap similarity check → "this looks
   like `X`, extend that instead")
@@ -158,35 +161,87 @@ promotion; a permanent helper that keeps raising exceptions gets flagged for rev
 
 ---
 
-## 6. Discovery, layered
+## 6. Discovery: categorize by job, retrieve by task
 
-The user's ask was that helpers feel like discovering MCP calls. Five layers, cheapest first:
+**Settled:** helpers are *not* registered as individual MCP tools. That would burn
+context linearly in library size — fighting the point of accumulating many helpers — and
+would push them back onto the one-at-a-time JSON channel, when CodeAct's whole claim is
+that composing them in code (in a loop, in a conditional, piping one into the next) is
+what helps. Discovery gets MCP-like ergonomics; invocation stays in Python.
 
-1. **Session-start injection** — a compact catalog (names + one-line summaries only,
-   size-capped) so the agent knows the library exists without spending a call.
-2. **`search_helpers`** — the MCP front door, same ergonomics as tool discovery.
-3. **`read_helper`** — full body on demand.
-4. **MCP resources** — `codeact://helpers/<name>`, which Claude Code surfaces through
-   `@` mention autocomplete, so a human can pull one into context directly.
-5. **In-interpreter** — `helpers.search()`, `help()`, real docstrings on preloaded functions.
+### The job axis
 
-### The fork worth deciding early
+Every helper declares exactly one **job** — the kind of work it does — drawn from a
+closed vocabulary:
 
-There's a stronger reading of "discoverable like MCP calls": register **each approved
-helper as its own MCP tool**. This is mechanically possible — Claude Code honors
-`list_changed` notifications, so a helper approved mid-session would appear in the tool
-list immediately, without a reconnect.
+| job | what it does | touches the world? |
+|---|---|---|
+| `acquire` | bring data in from outside the process | yes |
+| `parse` | serialized or unstructured → structured | no |
+| `transform` | structured → structured: reshape, filter, join, aggregate | no |
+| `inspect` | answer a question without changing anything: search, measure, diff, validate | no |
+| `present` | format existing data for reading: render, tabulate, summarize | no |
+| `generate` | produce a new artifact: code, text, config | no |
+| `mutate` | change external state: write, commit, POST | yes |
+| `orchestrate` | sequence, retry, or parallelize other helpers | inherits |
 
-I'd argue against it as the default, for two reasons. It burns context linearly in the
-size of the library, which fights the whole point of accumulating a lot of helpers. And
-it puts helpers back on the JSON-tool-call channel, when CodeAct's central claim is that
-composing them *in code* — in a loop, in a conditional, piping one into the next — is
-what makes the agent better. A helper that can only be invoked one-at-a-time via tool
-call has lost most of its value.
+Closed on purpose. Free-form tag sets rot within a few dozen entries; adding a new job
+category is itself an approval-gated event.
 
-The catalog-plus-namespace approach keeps the discovery ergonomics while leaving
-composition in Python. Worth revisiting if the library stays small (<15) and the helpers
-turn out to be things the agent calls in isolation anyway.
+Worth noticing that the job axis and the `side_effects` classification from §5 largely
+agree — `acquire` and `mutate` are precisely the categories that touch the world. The
+categorization does double duty as safety metadata, and a proposal whose declared job and
+declared side effects disagree is a signal the author misunderstood their own function.
+
+A second axis, **domain**, is a curated tag list: `github`, `git`, `fs`, `http`, `data`,
+`ast`, `text`, `db`, plus project-specific ones. Each helper takes exactly one job and
+one to three domains. One primary job is what keeps the index navigable — a helper that
+genuinely spans two jobs is usually two helpers.
+
+Categorization happens **at approval time, not at read time**. The proposal must declare
+its job and domains, and the human approving it is validating that classification along
+with the code. This is why the taxonomy stays clean: it's curated on write by a human,
+never inferred on read.
+
+### Retrieval, three tiers
+
+| tier | cost | what the agent gets |
+|---|---|---|
+| always in context | ~150 tokens | the **job index** only: categories, one-line definitions, counts — `acquire (12) · parse (8) · transform (15) …` |
+| once per task | ~500–800 tokens | signatures + summaries for the slice matching this task |
+| per use | full body | `read_helper` on the one or two it will actually call |
+
+Tier 1 means the agent always knows the *shape* of the library without spending a call —
+it knows there are twelve ways to acquire things before it knows what any of them are.
+
+The matching in tier 2 splits the work by what each side is good at. **The model does the
+semantic step**: reading a task and concluding it's `acquire + transform` over `github` is
+exactly what it's good at, and it's already in the loop, so this costs nothing extra and
+needs no embedding infrastructure. **The server does exact set filtering and ranking** —
+BM25 over name, summary and purpose for the free-text part, then ordering by telemetry
+priors: usage count, success rate, recency, and co-occurrence with helpers already called
+this session.
+
+So the flow at task start is: agent classifies the task from the job index it already
+has, calls `search_helpers(task="…", jobs=[…], domains=[…])`, gets a small ranked slice,
+pulls full source for the one it wants, and writes code.
+
+I'd ship lexical matching plus model-chosen categories first and only reach for
+embeddings if recall measurably disappoints. Sliced by job and domain, the candidate pool
+stays small enough that BM25 is fine well past a hundred helpers.
+
+Two secondary surfaces stay useful: **MCP resources** (`codeact://helpers/<name>`) so a
+human can `@`-mention one directly, and **in-interpreter** discovery (`helpers.by_job()`,
+`help()`, real docstrings on the preloaded functions) so code-driven lookup works without
+leaving the code channel.
+
+### Does the taxonomy actually work?
+
+Categorization schemes are easy to design and hard to validate, so this needs a number
+attached to it early. Alongside phase 2: seed the library, write tasks where a specific
+helper is the right answer, and measure how often the agent finds and uses it rather than
+rewriting the thing from scratch. That hit rate is what tells us whether the job axis is
+carrying its weight or whether we're building a filing cabinet nobody opens.
 
 ---
 
@@ -209,12 +264,14 @@ turn out to be things the agent calls in isolation anyway.
 | Phase | Ships | Why here |
 |---|---|---|
 | 1 | interpreter + `run_python` + skill | useful on its own, before any helper machinery |
-| 2 | registry, `search_helpers`, `read_helper`, preloading, hand-written seed helpers | proves discovery ergonomics with static content |
-| 3 | `propose_helper`, validation gate, approval hook + review command | the actual twist |
-| 4 | telemetry, repeat detection, promote/demote | makes accumulation self-sustaining |
-| 5 | sandbox tiers, dependency install, user scope, eval harness | hardening |
+| 2 | registry, job/domain taxonomy, `search_helpers`, `read_helper`, preloading, seed helpers, **discovery eval** | proves the retrieval ergonomics against static content, before any of it is load-bearing |
+| 3 | `propose_helper`, validation gate, approval surfaces | the actual twist |
+| 4 | telemetry, repeat detection, ranking priors, promote/demote | makes accumulation self-sustaining |
+| 5 | sandbox tiers, dependency install, user scope | hardening |
 
-Phase 1 is a day. Phases 2–3 are where the design risk is.
+Phase 1 is a day. Phases 2–3 are where the design risk is — and phase 2 is worth doing
+with hand-written helpers precisely because it lets us measure whether task-driven
+discovery works before building the machinery that generates the content.
 
 ---
 
@@ -230,5 +287,12 @@ Phase 1 is a day. Phases 2–3 are where the design risk is.
 4. **Does the agent write helpers, or extract them?** Proposing from *code it already
    ran successfully* is much safer than proposing freshly written code. I lean toward
    requiring the source to have been executed in-session first.
+5. **Is the eight-job vocabulary right?** It's a guess, and the honest way to find out is
+   to categorize thirty real helpers by hand and see which ones resist classification or
+   land in `orchestrate` because nothing else fit.
+6. **Should compositions accumulate too?** Individual helpers are the unit now, but the
+   recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
+   then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
+   and probably a phase 5+ question rather than something to design in now.
 5. **Sandbox default.** Tier 0 matches what Bash already permits and keeps setup at
    zero; tier 2 is defensible but adds Docker/uv as a hard dependency.
