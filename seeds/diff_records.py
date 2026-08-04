@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 
 from codeact import helper
 
 
-def _index(records: list[dict], key: str, side: str) -> dict:
+def _index(records: Iterable[dict], key: str, side: str) -> dict:
     indexed: dict = {}
     for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise TypeError(
+                f"{side}[{position}] is {type(record).__name__}, not a dict; "
+                f"{side} must be an iterable of record dicts, not a single record"
+            )
         if key not in record:
             raise KeyError(f"{side}[{position}] has no field {key!r}")
         value = record[key]
@@ -48,6 +53,19 @@ def _index(records: list[dict], key: str, side: str) -> dict:
             "note": "a field on only one side reports just 'old' (dropped) or just 'new' (added)",
         },
         {
+            "code": "diff_records(iter(_before), iter(_after), 'id', ignore=['id'])",
+            "note": (
+                "each side is read exactly once, so one-shot iterators are fine; naming the "
+                "key in ignore is a no-op — the key is never compared, so the result matches "
+                "the first example"
+            ),
+        },
+        {
+            "code": "diff_records(_before, _after, 'id', ignore='owner')",
+            "note": "a bare string would be iterated into letters and ignore no field at all",
+            "raises": True,
+        },
+        {
             "code": "diff_records([{'id': 1}, {'id': 1}], [], 'id')",
             "note": "a repeated key means the field does not identify a record",
             "raises": True,
@@ -55,8 +73,8 @@ def _index(records: list[dict], key: str, side: str) -> dict:
     ],
 )
 def diff_records(
-    before: list[dict],
-    after: list[dict],
+    before: Iterable[dict],
+    after: Iterable[dict],
     key: str,
     *,
     ignore: Collection[str] = (),
@@ -73,15 +91,25 @@ def diff_records(
         documents — this compares each record's fields one level deep only.
 
     Args:
-        before: The earlier snapshot, a list of flat dicts. Every record must
-            carry `key`, and no two may share the same value for it.
+        before: The earlier snapshot: an iterable of flat dicts, normally a
+            list. Every record must carry `key`, and no two may share the same
+            value for it. Read exactly once, so a one-shot iterator (a generator,
+            a csv.DictReader) is accepted; nothing is copied and nothing is
+            mutated.
         after: The later snapshot, same constraints. Field names need not match
             `before`'s — fields that appear or disappear are reported.
         key: Name of the identifying field present in every record on both
-            sides, e.g. "id" or "sha". Its values must be hashable.
+            sides, e.g. "id" or "sha". Its values must be hashable. The key
+            field is what the two sides are paired on, so it is never compared
+            and never turns up in `changes`.
         ignore: Field names to leave out of the comparison, e.g.
-            ["updated_at", "etag"]. A record differing only in ignored fields is
-            reported as unchanged. Does not affect added/removed detection.
+            ["updated_at", "etag"] — a list, set or tuple of names, never a bare
+            string (`ignore="etag"` raises rather than silently ignoring the
+            letters 'e', 't', 'a', 'g'). A record differing only in ignored
+            fields is reported as unchanged. Does not affect added/removed
+            detection. Names that no record carries are simply never matched, so
+            a typo here is silent; naming `key` is likewise accepted and does
+            nothing, since the key is already excluded.
 
     Returns:
         dict with exactly three keys. `added` is the list of whole records from
@@ -90,26 +118,42 @@ def diff_records(
         `after`, in `before` order. `changed` is a list of
         {"key": <identifying value>, "changes": {field: {"old": ..., "new": ...}}}
         — one entry per record present on both sides with at least one differing
-        field, in `after` order, listing only the fields that actually differ. A
-        field present on only one side omits the other half, so {"new": 2} means
-        the field appeared and {"old": 1} means it went away. Records equal on
-        every compared field appear in none of the three lists, so three empty
-        lists mean the snapshots match. The records are the caller's own dicts,
-        referenced rather than copied.
+        field, in `after` order, listing only the fields that actually differ
+        and never `key` itself or an ignored field. A field present on only one
+        side omits the other half, so {"new": 2} means the field appeared and
+        {"old": 1} means it went away. Records equal on every compared field
+        appear in none of the three lists, so three empty lists mean the
+        snapshots match. The records are the caller's own dicts, referenced
+        rather than copied.
 
     Raises:
         KeyError: a record lacks the key field. The message names the side and
             the position within it, so go fix or filter that record.
         ValueError: a key value repeats within one side. Deduplicate first, or
             pick a field that really is unique.
-        TypeError: a key value is unhashable (a list, say) — join on a scalar
-            field instead.
+        TypeError: one of three mistakes, each spelled out in the message.
+            `ignore` was given a bare string, which would compare against its
+            individual letters and leave the field you meant diffed anyway —
+            pass ignore=["updated_at"], not ignore="updated_at". Or something
+            iterated out of `before`/`after` is not a dict, which is what
+            passing a single record, or a dict keyed by id, amounts to; the
+            message names the side and position. Or a key value is unhashable, a
+            list say — join on a scalar field instead.
 
     Preconditions:
         Field values must support `==`. Comparison is by equality, so 1 and 1.0
         count as unchanged, and two equal-but-distinct objects do too.
     """
-    ignored = set(ignore)
+    if isinstance(ignore, (str, bytes)):
+        raise TypeError(
+            f"ignore must be a collection of field names, not a bare "
+            f"{type(ignore).__name__}: set({ignore!r}) would drop single characters "
+            f"rather than a field — pass ignore=[{ignore!r}] instead"
+        )
+    # The key is what the sides are paired on, so comparing it can only ever
+    # report a spurious change (a key value that is not equal to itself, such as
+    # a nan, still matches by identity on lookup).
+    ignored = set(ignore) | {key}
     old_by_key = _index(before, key, "before")
     new_by_key = _index(after, key, "after")
 

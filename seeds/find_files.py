@@ -34,8 +34,8 @@ def _clean(patterns: Sequence[str], argname: str) -> list[str]:
         shown = patterns.decode(errors="replace") if isinstance(patterns, bytes) else patterns
         raise TypeError(
             f"{argname} must be a sequence of patterns, not a bare string: pass "
-            f"[{shown!r}], not {shown!r} (e.g. ['*.py'], not '*.py'). A bare string "
-            "is iterated character by character, so '*' alone would match everything."
+            f"[{shown!r}], not {shown!r}. A bare string is iterated character by "
+            "character, so '*' alone would match every file."
         )
 
     cleaned: list[str] = []
@@ -148,8 +148,10 @@ def find_files(
             relative root gives relative results and an absolute root gives
             absolute ones.
         include: Glob patterns; a file is kept if it matches at least one. Must
-            be a list or tuple of strings — a bare string raises TypeError
-            rather than being iterated one character at a time. What a pattern
+            be a sequence of strings, such as a list — a bare string raises
+            TypeError rather than being iterated one character at a time, since
+            include="*.py" would otherwise mean the four patterns "*", ".",
+            "p", "y" and quietly keep every file. What a pattern
             is matched against depends on whether it contains "/": with a "/"
             it is matched against the file's path relative to root and nothing
             else ("src/*.py" tested against "src/util.py"); without a "/" it is
@@ -162,7 +164,8 @@ def find_files(
             quietly matching nothing. This is fnmatch, not pathlib.glob — "*"
             also matches "/", so "src/*.py" reaches nested files at any depth
             and "**" buys you nothing. Default ("*",) keeps everything; an
-            empty sequence keeps nothing and returns [].
+            empty sequence ([]) keeps nothing and returns [], whereas an empty
+            pattern ([""]) is an error.
         exclude: Glob patterns that reject, with the same type rule and the same
             "/" rule as include, applied after it, so exclude always wins. A
             directory is tested the same way — by its bare name if the pattern

@@ -20,6 +20,18 @@
         "ok": true
       },
       {
+        "code": "diff_records(iter(_before), iter(_after), 'id', ignore=['id'])",
+        "note": "each side is read exactly once, so one-shot iterators are fine; naming the key in ignore is a no-op \u2014 the key is never compared, so the result matches the first example",
+        "output": "{'added': [{'id': 4, 'status': 'new', 'owner': 'di'}], 'removed': [{'id': 3, 'status': 'done', 'owner': 'cy'}], 'changed': [{'key': 2, 'changes': {'status': {'old': 'open', 'new': 'closed'}, 'owner': {'old': 'bo', 'new': 'ana'}}}]}",
+        "ok": true
+      },
+      {
+        "code": "diff_records(_before, _after, 'id', ignore='owner')",
+        "note": "a bare string would be iterated into letters and ignore no field at all",
+        "output": "TypeError: ignore must be a collection of field names, not a bare str: set('owner') would drop single characters rather than a field \u2014 pass ignore=['owner'] instead",
+        "ok": true
+      },
+      {
         "code": "diff_records([{'id': 1}, {'id': 1}], [], 'id')",
         "note": "a repeated key means the field does not identify a record",
         "output": "ValueError: duplicate id=1 in before; the key must identify one record",
@@ -27,5 +39,5 @@
       }
     ]
   },
-  "source_hash": "58694a40e9970382"
+  "source_hash": "05aa646cdf4c1afa"
 }
