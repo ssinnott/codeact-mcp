@@ -1,0 +1,29 @@
+{
+  "captured": [
+    {
+      "code": "_rel(find_files(_root, include=['*.py']))",
+      "note": "_rel only trims the temp prefix for display; the real return is full paths. node_modules/ and .git/ are pruned without being asked",
+      "output": "['app.py', 'app_test.py', 'build/out.py', 'src/util.py', 'src/util_test.py']",
+      "ok": true
+    },
+    {
+      "code": "_rel(find_files(_root, include=['*.py'], exclude=['*_test.py', 'build']))",
+      "note": "'*_test.py' drops files by name; 'build' matches a directory and prunes it",
+      "output": "['app.py', 'src/util.py']",
+      "ok": true
+    },
+    {
+      "code": "_rel(find_files(_root, include=['src/*']))",
+      "note": "a pattern containing '/' is matched against the path relative to root",
+      "output": "['src/data.json', 'src/util.py', 'src/util_test.py']",
+      "ok": true
+    },
+    {
+      "code": "find_files(os.path.join(_root, 'does-not-exist'))",
+      "note": "a missing root is an error, not an empty list",
+      "output": "FileNotFoundError: no such directory: /tmp/tmpag_ajchd/does-not-exist",
+      "ok": true
+    }
+  ],
+  "source_hash": "26be5f28ffcb963d"
+}
