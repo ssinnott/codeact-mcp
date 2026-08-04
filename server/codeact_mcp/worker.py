@@ -1,0 +1,210 @@
+"""The interpreter subprocess.
+
+Runs as its own process so a `sys.exit()`, a segfault, or a runaway loop kills
+this and not the MCP server. Speaks JSON-lines with the parent.
+
+Protocol integrity matters here: anything the user's code writes to fd 1 would
+corrupt the stream. So at startup we dup the real stdout aside for protocol use
+and point fd 1 at /dev/null. Subprocesses spawned by executed code inherit the
+harmless fd, and `print` is captured separately via redirect_stdout.
+"""
+
+from __future__ import annotations
+
+import ast
+import contextlib
+import io
+import json
+import os
+import sys
+import traceback
+import types
+
+MAX_OUTPUT = 4000  # chars returned inline; the full text stays as `_out`
+MAX_REPR = 120
+
+
+def _short(value: object) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        return "<unreprable>"
+    text = " ".join(text.split())
+    return text if len(text) <= MAX_REPR else text[: MAX_REPR - 1] + "…"
+
+
+def _describe(value: object) -> str:
+    """A summary, not a dump.
+
+    The whole point of keeping large intermediates in the interpreter is that
+    they never reach the context window, so reporting a thousand-element list by
+    printing its first thousand elements would defeat the exercise.
+    """
+    if isinstance(value, (str, bytes)):
+        if len(value) > 60:
+            unit = "chars" if isinstance(value, str) else "bytes"
+            return f"{len(value)} {unit}"
+        return _short(value)
+    if isinstance(value, (list, tuple, set, frozenset, dict, bytearray)):
+        try:
+            if len(value) > 6:
+                return f"{len(value)} items"
+        except TypeError:
+            pass
+        return _short(value)
+    if isinstance(value, type):
+        return f"class {value.__name__}"
+    if callable(value):
+        return getattr(value, "__name__", None) or _short(value)
+    return _short(value)
+
+
+def _is_noise(name: str, value: object) -> bool:
+    """Names that would clutter the delta without informing anything.
+
+    Imported modules and the REPL result variable are both already visible —
+    the first from the code that was just run, the second from the `→` line.
+    """
+    return (
+        name.startswith("__")
+        or name in ("_", "_out")
+        or isinstance(value, types.ModuleType)
+    )
+
+
+def _snapshot(ns: dict) -> dict[str, int]:
+    return {k: id(v) for k, v in ns.items() if not k.startswith("__")}
+
+
+def _delta(before: dict[str, int], ns: dict) -> list[dict[str, str]]:
+    """New or rebound names, so the agent can track state without printing it."""
+    out = []
+    for name, value in ns.items():
+        if _is_noise(name, value):
+            continue
+        prev = before.get(name)
+        if prev is None:
+            kind = "new"
+        elif prev != id(value):
+            kind = "changed"
+        else:
+            continue
+        out.append(
+            {
+                "name": name,
+                "kind": kind,
+                "type": type(value).__name__,
+                "repr": _describe(value),
+            }
+        )
+    out.sort(key=lambda d: d["name"])
+    return out
+
+
+def _split_last_expression(code: str):
+    """Compile like a REPL: the trailing expression's value is reported."""
+    tree = ast.parse(code)
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        head = ast.Module(body=tree.body[:-1], type_ignores=[])
+        tail = ast.Expression(body=tree.body[-1].value)
+        return compile(head, "<codeact>", "exec"), compile(tail, "<codeact>", "eval")
+    return compile(tree, "<codeact>", "exec"), None
+
+
+def _truncate(text: str) -> tuple[str, bool]:
+    if len(text) <= MAX_OUTPUT:
+        return text, False
+    keep = MAX_OUTPUT // 2
+    return text[:keep] + "\n…[truncated, full text in `_out`]…\n" + text[-keep:], True
+
+
+def execute(ns: dict, code: str) -> dict:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    before = _snapshot(ns)
+    result_repr = None
+    error = None
+
+    try:
+        head, tail = _split_last_expression(code)
+    except SyntaxError:
+        return {
+            "stdout": "",
+            "stderr": "",
+            "error": "".join(traceback.format_exception_only(*sys.exc_info()[:2])).strip(),
+            "delta": [],
+            "result": None,
+            "truncated": False,
+        }
+
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exec(head, ns)
+            if tail is not None:
+                value = eval(tail, ns)
+                if value is not None:
+                    ns["_"] = value
+                    result_repr = _short(value)
+    except KeyboardInterrupt:
+        error = "KeyboardInterrupt: execution exceeded its timeout (state preserved)"
+    except SystemExit as exc:
+        error = f"SystemExit: {exc.code} (ignored; the session is still alive)"
+    except BaseException:
+        # Drop our own frame so the traceback starts at the user's code.
+        exc_type, exc_value, tb = sys.exc_info()
+        error = "".join(traceback.format_exception(exc_type, exc_value, tb.tb_next or tb))
+
+    out_text = stdout.getvalue()
+    err_text = stderr.getvalue()
+    full = out_text + (("\n" + err_text) if err_text else "")
+    if full:
+        ns["_out"] = full
+
+    shown_out, truncated = _truncate(out_text)
+    return {
+        "stdout": shown_out,
+        "stderr": _truncate(err_text)[0],
+        "error": error,
+        "delta": _delta(before, ns),
+        "result": result_repr,
+        "truncated": truncated,
+    }
+
+
+def main() -> None:
+    # Move the protocol channel off fd 1 before running anything untrusted.
+    protocol = os.fdopen(os.dup(1), "w", buffering=1)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    sys.stdout = io.TextIOWrapper(open(os.devnull, "wb"), write_through=True)
+
+    ns: dict = {"__name__": "__codeact__", "__builtins__": __builtins__}
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        op = msg.get("op")
+        if op == "exec":
+            payload = execute(ns, msg.get("code", ""))
+        elif op == "state":
+            payload = {
+                "names": [
+                    {"name": k, "type": type(v).__name__, "repr": _describe(v)}
+                    for k, v in sorted(ns.items())
+                    if not _is_noise(k, v)
+                ]
+            }
+        else:
+            payload = {"error": f"unknown op: {op}"}
+
+        payload["id"] = msg.get("id")
+        protocol.write(json.dumps(payload) + "\n")
+
+
+if __name__ == "__main__":
+    main()

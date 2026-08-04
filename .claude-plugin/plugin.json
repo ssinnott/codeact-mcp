@@ -1,0 +1,12 @@
+{
+  "name": "codeact",
+  "displayName": "CodeAct",
+  "version": "0.1.0",
+  "description": "Executable Python as the agent's action language, backed by a session-scoped interpreter and an accumulating library of approved helper functions.",
+  "author": {
+    "name": "ssinnott"
+  },
+  "repository": "https://github.com/ssinnott/codeact-mcp",
+  "license": "MIT",
+  "keywords": ["python", "interpreter", "codeact", "mcp", "repl"]
+}

@@ -334,8 +334,14 @@ a published contract**. So the question isn't "is this code any good" — the ga
 that identically for both — it's *what does this change do to the card?* Classify by that,
 and the workflow falls out.
 
-**Breaking changes aren't revisions. They're new helpers.** If the signature changes
-incompatibly, the return shape changes, or the semantics change enough that the old
+**Prefer optional arguments.** Python makes compatible extension the path of least
+resistance — a new keyword argument with a default keeps every existing call valid — and
+the gate should actively push authors that way, because a revision that could have been
+additive but wasn't costs a name and a retirement for nothing. Most "breaking" changes
+aren't, if you reach for a default value first.
+
+**When it genuinely does break, it's not a revision. It's a new helper.** If the signature
+changes incompatibly, the return shape changes, or the semantics change enough that the old
 examples no longer hold, the answer is a new name, and the old helper goes to the removal
 queue if it's now redundant.
 
@@ -766,7 +772,7 @@ from a single execution.
 
 | Phase | Ships | Why here |
 |---|---|---|
-| 1 | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
+| 1 ✅ | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
 | 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
 | 3 | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
