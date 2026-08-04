@@ -61,12 +61,16 @@ Helpers do **not** live in this repo, and — for now — they don't live in the
 project either. **One library per machine, in the home directory:**
 
 ```
-~/.codeact/
-├── helpers/<name>.py        # code + its card, one file each
-├── proposals/<id>.json      # pending, awaiting human approval
-├── corpus.jsonl             # every executed block + outcome, across all projects
-└── fingerprints.db          # normalized AST hashes for cross-session mining
+~/.codeact/                  # a local git repo — free history, diff, blame, revert
+├── helpers/<name>.py        # code + its card, one file each — tracked
+├── proposals/<id>.json      # pending, awaiting human approval — tracked
+├── corpus.jsonl             # every executed block + outcome, all projects — gitignored
+└── fingerprints.db          # normalized AST hashes for cross-session mining — gitignored
 ```
+
+`git init` on that directory is worth doing on day one and costs nothing: it makes helper
+history, revision diffs, and rollback into solved problems rather than features (§6). The
+corpus stays untracked — it churns constantly and can contain sensitive strings.
 
 Secrets deliberately live **nowhere near** that tree — encrypted, keyed from the OS
 keyring (§10).
@@ -102,8 +106,9 @@ Deliberately small — every tool costs context in every session.
   helper: `name(sig) — summary [job/domains]`. The front door, and deliberately the same
   ergonomics as discovering MCP tools. See §7 for how the slice is chosen.
 - `describe_helper(name)` → the **card**: the usage contract, *not* the source. See §5.
-- `propose_helper(name, source, card, job, domains, side_effects)` → runs the
-  validation gate, writes a **pending** proposal. Installs nothing.
+- `propose_helper(name, source, card, job, domains, side_effects, revises?)` → runs the
+  validation gate, writes a **pending** proposal. Installs nothing. `revises` names an
+  existing helper and switches the gate into diff mode (§6).
 
 **Secondary (2):** `session_state()`, `restart_session()`.
 
@@ -185,8 +190,10 @@ drift apart.
 ### The one escape hatch
 
 Source access exists, but through a separate narrow door — `helper_source(name)` — and
-only for the revision workflow: the agent proposing a change to an existing helper does
-legitimately need to see it. It is not part of the discovery path.
+only for the revision workflow (§6): the agent proposing a change to an existing helper
+does legitimately need to see it. It is not part of the discovery path, and reading source
+is expected to be followed by a `propose_helper(..., revises=…)` rather than by the agent
+quietly writing its own corrected copy inline.
 
 Debugging deliberately does *not* qualify. If a helper fails in a way its card didn't
 predict, the correct outcome is a flagged helper and a human fix, not an agent reverse
@@ -319,6 +326,81 @@ than one at a time mid-task. Nothing installs without a human keystroke either w
 disappears at session end) and **permanent** (written to `~/.codeact/helpers/`).
 Telemetry drives movement: a provisional helper used successfully N times is offered for
 promotion; a permanent helper that keeps raising exceptions gets flagged for revision.
+
+### Revising an existing helper
+
+A revision differs from a new proposal in exactly one way that matters: **there is already
+a published contract**. So the question isn't "is this code any good" — the gate answers
+that identically for both — it's *what does this change do to the card?* Classify by that,
+and the workflow falls out.
+
+**Breaking changes aren't revisions. They're new helpers.** If the signature changes
+incompatibly, the return shape changes, or the semantics change enough that the old
+examples no longer hold, the answer is a new name, and the old helper goes to the removal
+queue if it's now redundant.
+
+This is worth stating firmly because it deletes an entire subsystem. Versioning exists to
+manage the pain of migrating coordinated callers — and there are no coordinated callers
+here. A helper's callers are future agent sessions that read the card fresh every time;
+nothing is pinned to an old signature, nothing needs a deprecation window, nothing needs a
+migration guide. **No version numbers on helpers.** Rename and retire instead.
+
+That leaves three real classes, each with a different amount of ceremony:
+
+| class | what changed | path |
+|---|---|---|
+| **body-only** | implementation; card byte-identical, examples still produce the captured outputs | full gate, standard review. From the agent's side *nothing happened* — it never saw the body (§5) |
+| **compatible extension** | new optional parameter, extra return field, newly documented failure mode; existing examples still pass unchanged | full gate, review with a card diff |
+| **card-only** | wording, a clarified constraint, a better when-not-to-use | fast path: diff review, nothing executes but the examples, no capability re-grant |
+| **any capability or secret increase** | — | escalated, regardless of the above |
+
+That last row is the one to get right. A revision that *adds* `network`, or adds a
+declared secret, is the single most dangerous edit in the system — a benign, trusted,
+already-approved helper quietly gaining reach is precisely what a supply-chain attack
+looks like, and it looks the same whether the cause is malice or a confused agent. So
+privilege increases get the same full interaction as a brand-new privileged helper, and
+the app shows the capability delta prominently rather than burying it in a source diff.
+Privilege *decreases* are safe and can fast-path.
+
+**The gate always re-runs, in full.** It's cheap, a revision is new code by definition, and
+deciding which checks to skip is more complexity than just running them all. What changes
+for a revision is that the gate reports a *diff* — card, source, capabilities, secrets —
+rather than a bare pass/fail.
+
+**The old version stays live while a revision is pending.** A proposal is a proposal; it
+shouldn't change the world just by existing, and taking a working helper away because
+someone suggested an improvement is a bad trade. The one exception is a helper already
+quarantined for failing its contract tests (§5), which is the case the open question
+worried about — and it turns out to be the *healthy* path rather than a conflict: the
+failure is what created the revision pressure, and the revision is the fix. The app should
+link the two and float that pair to the top of the queue, since it's the only queue item
+where something is currently broken.
+
+Quarantine means **removed from search and not preloaded**, not flagged-but-present. The
+agent trusts cards absolutely and cannot verify them (§5), so a helper with known-wrong
+documentation is worse than no helper at all. `describe_helper` on it still answers, with
+the quarantine reason, so anything referencing it learns why instead of getting a bare
+not-found.
+
+**Who writes it.** Three authors, one flow. The agent proposes a revision when it hits a
+limitation mid-task — this is the one situation where `helper_source` is legitimate (§5) —
+and passes `revises=<name>`. The miner proposes revisions from its revision queue. The
+human edits directly in the app. All three land in the same gate and the same review.
+
+One rule for the agent, stated in the skill: on hitting a broken or insufficient helper,
+the options are *propose a revision* or *report it*. Inlining a fixed copy and moving on is
+the failure mode to design against — it silently forks the library into the corpus, where
+the miner will eventually rediscover it as a near-duplicate cluster and propose re-adding
+what already exists.
+
+**Unblocking mid-task** is what the existing session-scope approval is for: approve a
+revision provisionally, the agent continues with the fix, permanent promotion happens later
+in the app at a moment of the human's choosing. No one has to do a careful review under
+time pressure to unblock a task.
+
+**Rollback** needs no design: `~/.codeact/` is a local git repo (§2), so a bad revision is
+`git revert`, and history, diff, and blame come free. The miner notices the regression on
+its own — a spike in failure rate is already a revision-queue trigger.
 
 ---
 
@@ -686,7 +768,7 @@ from a single execution.
 |---|---|---|
 | 1 | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
 | 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
-| 3 | `propose_helper`, validation gate, **review app v1** (card, source, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
+| 3 | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
 | 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 
@@ -721,10 +803,12 @@ trial run of unreviewed code is the least safe thing in the system (§11).
 5. **Is the eight-job vocabulary right?** It's a guess, and the honest way to find out is
    to categorize thirty real helpers by hand and see which ones resist classification or
    land in `orchestrate` because nothing else fit.
-6. **How does revision actually work?** Source is visible only for the revise-an-existing-
-   helper path (§5), but the flow isn't designed: does a revision re-run the full gate,
-   does it need re-approval when only the card changed, and what happens to a helper whose
-   contract tests fail while a revision is pending?
+6. **Does "breaking change means a new name" hold up in practice?** It's what lets the
+   design skip versioning entirely (§6), and the reasoning is sound — a helper's callers
+   are future sessions reading a fresh card, so there's nothing to migrate. The risk is
+   name sprawl: `parse_log`, `parse_log2`, `parse_log_structured` accumulating because
+   every real improvement was technically breaking. If that shows up, the removal queue is
+   the pressure valve, but it may need to be more aggressive than "unused for months."
 7. **Should compositions accumulate too?** Individual helpers are the unit now, but the
    recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
    then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
