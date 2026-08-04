@@ -5,7 +5,17 @@ from __future__ import annotations
 import os
 import time
 
-from . import corpus, guard, paths, search as search_mod, taxonomy
+from . import (
+    config,
+    corpus,
+    guard,
+    miner,
+    paths,
+    proposals,
+    search as search_mod,
+    secrets_store,
+    taxonomy,
+)
 from .interpreter import Session, Timeout
 from .protocol import Server
 from .registry import registry
@@ -15,6 +25,9 @@ DEFAULT_TIMEOUT = 30.0
 MAX_TIMEOUT = 600.0
 
 _session: Session | None = None
+# Capabilities the human granted for this session only. Never persisted — the
+# point of a session grant is that it expires.
+_session_grants: set[str] = set()
 
 
 def session() -> Session:
@@ -52,7 +65,11 @@ def _format(payload: dict, findings: list) -> str:
     if note:
         parts.append(note)
 
-    return "\n\n".join(parts) if parts else "(no output)"
+    text = "\n\n".join(parts) if parts else "(no output)"
+    # Egress redaction. Tracebacks are the case that matters: an exception
+    # raised inside an HTTP library will print the auth header it was called
+    # with, and that path bypasses the Secret wrapper entirely.
+    return secrets_store.redact(text)
 
 
 def _error_type(error: str | None) -> str | None:
@@ -105,6 +122,20 @@ def build() -> Server:
     def run_python(code: str, timeout_s: float = DEFAULT_TIMEOUT) -> str:
         timeout = max(1.0, min(float(timeout_s), MAX_TIMEOUT))
         findings = guard.scan(code)
+
+        if config.enforcing():
+            granted = set(config.get("granted") or ()) | _session_grants
+            blocked = guard.blocking(findings, granted)
+            if blocked:
+                corpus.record(
+                    code,
+                    outcome="blocked",
+                    duration_ms=0,
+                    guard_findings=findings,
+                    error_type="GuardBlocked",
+                )
+                return guard.refusal(blocked)
+
         started = time.monotonic()
         try:
             payload = session().execute(code, timeout)
@@ -191,6 +222,9 @@ def build() -> Server:
             jobs=jobs or (),
             domains=domains or (),
             project=os.getcwd(),
+            # Mined priors: how often each helper has actually been used, how
+            # often it failed, and in how many projects.
+            usage=miner.usage(reg),
         )
         if not found:
             counts = reg.counts_by_job()
@@ -230,6 +264,132 @@ def build() -> Server:
             hint = f" Did you mean: {', '.join(sorted(close))}?" if close else ""
             return f"No helper named {name!r}.{hint} Use search_helpers to look."
         return entry.card.render()
+
+    @server.tool(
+        "propose_helper",
+        (
+            "Propose a new helper for the library, or a revision to an existing one. "
+            "This installs NOTHING — it records a pending proposal and runs the full "
+            "validation gate, and a human decides.\n\n"
+            "Propose when you have written the same non-trivial code more than once, "
+            "or when the guard blocked a capability and packaging it as a reviewed "
+            "helper is the right way to get it. The test: would a future session, with "
+            "no memory of this task, be better off?\n\n"
+            "`source` must be a complete module defining exactly one function decorated "
+            "with @helper. The agent that later uses it will NEVER see this source — "
+            "only the docstring — so the contract must be complete: a summary, "
+            "'Use when:' and \"Don't use when:\" lines, every parameter under Args:, the "
+            "SHAPE of the return under Returns:, failure modes under Raises:, and at "
+            "least one runnable example whose real output is captured on approval.\n\n"
+            + proposals.vocabulary_hint()
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The helper's function name."},
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "Complete module source, starting with `from codeact import "
+                        "helper`, defining one decorated function."
+                    ),
+                },
+                "revises": {
+                    "type": "string",
+                    "description": (
+                        "Name of an existing helper this replaces. Prefer adding an "
+                        "optional argument over a breaking change — a breaking change "
+                        "is a new helper with a new name, not a revision."
+                    ),
+                },
+            },
+            "required": ["name", "source"],
+        },
+    )
+    def propose_helper(name: str, source: str, revises: str = "") -> str:
+        proposal = proposals.propose(name, source, revises)
+        if proposal.problems:
+            return (
+                f"Proposal {proposal.id} for {name!r} did NOT pass the gate. "
+                f"Fix all of these and propose again:\n  "
+                + "\n  ".join(proposal.problems)
+            )
+        note = ""
+        if proposal.diff.get("escalates"):
+            note = (
+                "\n\nNote: this revision increases what the helper can reach, so it "
+                "will need the same scrutiny as a brand-new privileged helper."
+            )
+        return (
+            f"Proposal {proposal.id} for {name!r} passed the gate and is pending review.\n"
+            f"A human approves it with `codeact review` or `python3 tools/approve.py "
+            f"{proposal.id}`. It is not callable until then.{note}\n\n"
+            f"Card as it will be seen:\n{proposal.card}"
+        )
+
+    @server.tool(
+        "helper_source",
+        (
+            "Read a helper's implementation. This exists ONLY for revising an existing "
+            "helper — read it, then call propose_helper(..., revises=<name>).\n\n"
+            "Do not use it to work around a helper that misbehaves. If behaviour "
+            "contradicts the card, that is a defect worth reporting, and quietly "
+            "writing your own corrected copy hides it from everyone else."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "reason": {
+                    "type": "string",
+                    "description": "Why you need the source. Recorded with the request.",
+                },
+            },
+            "required": ["name", "reason"],
+        },
+    )
+    def helper_source(name: str, reason: str) -> str:
+        entry = registry().get(name)
+        if entry is None:
+            return f"No helper named {name!r}."
+        corpus.record(
+            f"# helper_source({name!r})\n# reason: {reason}",
+            outcome="source_read",
+            duration_ms=0,
+        )
+        return f"# {entry.path}\n\n{entry.path.read_text()}"
+
+    @server.tool(
+        "request_capability",
+        (
+            "Ask the human to grant a privileged capability for this session only. "
+            "Prefer propose_helper instead where the work is reusable: an approved "
+            "helper carries its capability permanently and every later session "
+            "benefits, while a grant expires when the session ends."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "capability": {
+                    "type": "string",
+                    "enum": ["network", "process", "filesystem", "deserialize", "dynamic"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "What you need it for, specifically.",
+                },
+            },
+            "required": ["capability", "reason"],
+        },
+        # Always prompts, and can never be pre-allowlisted away.
+        **{"anthropic/requiresUserInteraction": True},
+    )
+    def request_capability(capability: str, reason: str) -> str:
+        _session_grants.add(capability)
+        return (
+            f"Granted `{capability}` for this session only. It disappears when the "
+            "session ends; propose_helper is how it becomes permanent."
+        )
 
     @server.tool(
         "restart_session",

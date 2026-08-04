@@ -35,6 +35,14 @@ _SECRET_PATTERNS = [
 
 
 def redact(text: str) -> str:
+    # Known secret values first — an exact match beats any heuristic — then the
+    # credential-shaped patterns for things never registered as secrets.
+    try:
+        from . import secrets_store
+
+        text = secrets_store.redact(text)
+    except Exception:
+        pass
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("<redacted>", text)
     return text

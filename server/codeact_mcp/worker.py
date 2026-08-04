@@ -186,6 +186,28 @@ def execute(ns: dict, code: str) -> dict:
     }
 
 
+class _SecretGate:
+    """What `secrets` is bound to in the interpreter.
+
+    Deliberately not the module: agent-authored code should get a clear refusal
+    naming the fix, not a stack trace from somewhere inside the store.
+    """
+
+    def __init__(self, store, allowed: set) -> None:
+        self._store = store
+        self._allowed = allowed
+
+    def __repr__(self) -> str:
+        known = ", ".join(self._store.names()) or "none set"
+        return f"<secrets: {known} — readable only inside an approved helper>"
+
+    def get(self, name: str):
+        return self._store.get(name, registry_names=self._allowed)
+
+    def names(self) -> list:
+        return self._store.names()
+
+
 def _preload() -> dict:
     """Bind approved helpers into the namespace so code can just call them.
 
@@ -194,11 +216,23 @@ def _preload() -> dict:
     """
     try:
         sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+        from codeact_mcp import secrets_store
         from codeact_mcp.facade import Helpers
         from codeact_mcp.registry import registry
 
         reg = registry()
-        return {**reg.namespace(), "helpers": Helpers(reg)}
+        # Helper modules load as codeact_helper_<name>, which is what the
+        # secret guard recognises; agent code never matches.
+        allowed = {
+            f"codeact_helper_{e.path.stem}"
+            for e in reg.entries.values()
+            if e.card.meta.requires_secrets
+        }
+        return {
+            **reg.namespace(),
+            "helpers": Helpers(reg),
+            "secrets": _SecretGate(secrets_store, allowed),
+        }
     except Exception:
         return {}
 

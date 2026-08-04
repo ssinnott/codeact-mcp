@@ -1,0 +1,211 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>codeact review</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1c1c1a; --dim: #6b6b64; --line: #e2e1dc;
+    --card: #fff; --accent: #2f5d50; --warn: #8a3b1e; --warnbg: #fdf1ec;
+    --ok: #2f5d50; --code: #f5f4f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --fg: #e6e5e0; --dim: #98978f; --line: #2c2e33;
+      --card: #1d1f23; --accent: #7fbfa8; --warn: #e0916b; --warnbg: #2e211a;
+      --ok: #7fbfa8; --code: #121316;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+  .muted { color: var(--dim); font-size: 13px; }
+  main { padding: 22px 28px 60px; max-width: 1080px; }
+  nav { display: flex; gap: 4px; margin-bottom: 22px; flex-wrap: wrap; }
+  nav button { background: none; border: 1px solid transparent; color: var(--dim);
+    padding: 6px 12px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 14px; }
+  nav button[aria-selected="true"] { background: var(--card); border-color: var(--line); color: var(--fg); }
+  nav .count { font-variant-numeric: tabular-nums; opacity: .7; margin-left: 5px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 11px;
+    padding: 16px 18px; margin-bottom: 14px; }
+  .card.escalates { border-color: var(--warn); background: var(--warnbg); }
+  .row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .name { font-weight: 600; font-size: 15px; }
+  .tag { font-size: 12px; color: var(--dim); border: 1px solid var(--line);
+    padding: 1px 7px; border-radius: 20px; }
+  .tag.danger { color: var(--warn); border-color: var(--warn); }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5;
+    margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; }
+  details { margin-top: 10px; } summary { cursor: pointer; color: var(--dim); font-size: 13px; }
+  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button.act { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button.act:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  button.act:disabled { opacity: .5; cursor: default; }
+  ul.problems { margin: 10px 0 0; padding-left: 20px; color: var(--warn); font-size: 13.5px; }
+  .effects { margin-top: 10px; font-size: 13px; }
+  .effects b { color: var(--warn); }
+  .empty { color: var(--dim); padding: 30px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  td, th { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+
+<header>
+  <h1>codeact review</h1>
+  <span class="muted" id="status">loading…</span>
+</header>
+
+<main>
+  <nav id="tabs"></nav>
+  <div id="view"></div>
+</main>
+
+<script>
+const T = new URLSearchParams(location.search).get("t");
+const api = (p, body) => fetch(p + "?t=" + encodeURIComponent(T), body
+  ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}
+  : undefined).then(r => r.json());
+
+let S = null, tab = "pending", trials = {};
+
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+const TABS = [
+  ["pending",  "Pending",            s => s.pending.length],
+  ["failed",   "Failed the gate",    s => s.failed.length],
+  ["candidates","Mined candidates",  s => s.queues.candidates.length],
+  ["retrieval","Retrieval failures", s => s.queues.retrieval_failures.length],
+  ["revisions","Needs revision",     s => s.queues.revisions.length],
+  ["library",  "Library",            s => s.helpers.length],
+];
+
+function render() {
+  document.getElementById("tabs").innerHTML = TABS.map(([id, label, n]) =>
+    `<button aria-selected="${id === tab}" onclick="pick('${id}')">${label}<span class="count">${n(S)}</span></button>`
+  ).join("");
+  document.getElementById("view").innerHTML = ({
+    pending: () => S.pending.length ? S.pending.map(proposal).join("") : empty("Nothing is waiting for you."),
+    failed: () => S.failed.length ? S.failed.map(proposal).join("") : empty("No proposals failed the gate."),
+    candidates: candidates, retrieval: retrieval, revisions: revisions, library: library,
+  }[tab])();
+}
+const empty = m => `<p class="empty">${m}</p>`;
+function pick(id) { tab = id; render(); }
+
+function proposal(p) {
+  const tags = [
+    `<span class="tag">${esc(p.job)}</span>`,
+    ...p.domains.map(d => `<span class="tag">${esc(d)}</span>`),
+    p.effects !== "none" ? `<span class="tag danger">${esc(p.effects)}</span>` : "",
+    ...p.secrets.map(s => `<span class="tag danger">secret: ${esc(s)}</span>`),
+    p.revises ? `<span class="tag">revises ${esc(p.revises)}</span>` : "",
+  ].join("");
+  const t = trials[p.id];
+  return `<div class="card ${p.escalates ? "escalates" : ""}">
+    <div class="row"><span class="name">${esc(p.name)}</span>${tags}
+      <span class="muted">${esc(p.id)}</span></div>
+    ${p.escalates ? `<p style="color:var(--warn);margin:10px 0 0"><b>This revision increases what the helper can reach.</b>
+      ${esc(JSON.stringify(p.diff))} — review it as if it were a brand-new privileged helper.</p>` : ""}
+    ${p.problems.length ? `<ul class="problems">${p.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    <details open><summary>Card — this is all the agent will ever see</summary><pre>${esc(p.card)}</pre></details>
+    <details><summary>Source — the agent never sees this</summary><pre>${esc(p.source)}</pre></details>
+    ${t ? trialReport(t) : ""}
+    <div class="actions">
+      <button class="act" onclick="runTrial('${p.id}')">Trial run</button>
+      ${p.problems.length ? "" : `<button class="act primary" onclick="decide('approve','${p.id}')">Approve</button>`}
+      <button class="act" onclick="decide('reject','${p.id}')">Reject</button>
+    </div>
+  </div>`;
+}
+
+function trialReport(t) {
+  if (t.pending) return `<p class="muted" style="margin-top:12px">running…</p>`;
+  const r = t.report || {};
+  if (r.fatal) return `<div class="effects"><b>Trial failed.</b><pre>${esc(r.fatal)}</pre></div>`;
+  return `<div class="effects">
+    <b>What it touched</b> — output alone tells you it is plausible; this tells you it does nothing else.
+    <pre>${esc((r.effect_lines || []).join("\n"))}</pre>
+    <pre>${esc((r.results || []).map(x => `>>> ${x.code}\n${x.output || ""}`).join("\n\n"))}</pre>
+    <p class="muted">Ran in a scratch directory with no real credentials.</p>
+  </div>`;
+}
+
+async function runTrial(id) {
+  trials[id] = {pending: true}; render();
+  trials[id] = await api("/api/trial", {id}); render();
+}
+
+async function decide(action, id) {
+  let reason = "";
+  if (action === "reject") { reason = prompt("Why?") ?? ""; }
+  const res = await api("/api/" + action, {id, reason});
+  document.getElementById("status").textContent = res.message || "";
+  await load();
+}
+
+function candidates() {
+  const rows = S.queues.candidates;
+  if (!rows.length) return empty(`Nothing recurring yet — ${S.queues.corpus_size} blocks recorded so far. Patterns need to repeat across sessions before they show up here.`);
+  return rows.map(c => `<div class="card">
+    <div class="row"><span class="name">score ${c.score}</span>
+      <span class="tag">${c.sessions} sessions</span>
+      <span class="tag">${c.projects.length} projects</span>
+      <span class="tag">${c.count} runs</span>
+      ${c.failures ? `<span class="tag danger">${c.failures} failed first</span>` : ""}</div>
+    <pre>${esc(c.code)}</pre>
+    <p class="muted">Written repeatedly across sessions. Ask the agent to
+      <code>propose_helper</code> for this, then approve it here.</p>
+  </div>`).join("");
+}
+
+function retrieval() {
+  const rows = S.queues.retrieval_failures;
+  if (!rows.length) return empty("No re-implementations of existing helpers. Discovery is working.");
+  return rows.map(c => `<div class="card escalates">
+    <div class="row"><span class="name">${esc(c.helper)}</span>
+      <span class="tag danger">rewritten ${c.count}×</span></div>
+    <p style="margin:10px 0 0"><b>Discovery failed, not the library.</b>
+      This code matches <code>${esc(c.helper)}</code>, which already exists — so the fix is
+      the helper's card or its tags, not another helper.</p>
+    <pre>${esc(c.code)}</pre>
+  </div>`).join("");
+}
+
+function revisions() {
+  const rows = S.queues.revisions;
+  if (!rows.length) return empty("No helper is failing or quarantined.");
+  return rows.map(r => `<div class="card ${r.quarantined ? "escalates" : ""}">
+    <div class="row"><span class="name">${esc(r.name)}</span>
+      ${r.quarantined ? `<span class="tag danger">quarantined</span>`
+        : `<span class="tag danger">${Math.round(r.rate * 100)}% of ${r.calls} calls failed</span>`}</div>
+    <p class="muted" style="margin-top:8px">${esc(r.quarantined ||
+      "Failing often enough to be worth a look — either the code or the card is wrong.")}</p>
+  </div>`).join("");
+}
+
+function library() {
+  const removals = new Set(S.queues.removals);
+  return `<table><tr><th>helper</th><th>job</th><th>domains</th><th>effects</th><th></th></tr>
+    ${S.helpers.map(h => `<tr>
+      <td><b>${esc(h.name)}</b><br><span class="muted">${esc(h.summary)}</span></td>
+      <td>${esc(h.job)}</td><td>${esc(h.domains.join(", "))}</td>
+      <td>${h.effects === "none" ? '<span class="muted">none</span>' : `<b>${esc(h.effects)}</b>`}</td>
+      <td>${h.quarantine ? '<span class="tag danger">quarantined</span>'
+        : removals.has(h.name) ? '<span class="tag">never used</span>'
+        : h.builtin ? '<span class="muted">seed</span>' : ""}</td></tr>`).join("")}
+  </table>`;
+}
+
+async function load() {
+  S = await api("/api/state");
+  document.getElementById("status").textContent =
+    `${S.pending.length} pending · ${S.helpers.length} helpers · ${S.queues.corpus_size} blocks recorded`;
+  render();
+}
+load();
+</script>

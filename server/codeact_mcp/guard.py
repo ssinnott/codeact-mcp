@@ -124,3 +124,85 @@ def summarize(findings: list[Finding]) -> str:
         f"highest tier {worst}"
     )
     return header + "\n" + "\n".join("  " + line for line in lines)
+
+
+# Which capability each finding needs, so a grant can be named rather than
+# expressed as a list of modules.
+_CAPABILITY = {
+    "socket": "network",
+    "ssl": "network",
+    "http": "network",
+    "httpx": "network",
+    "requests": "network",
+    "urllib": "network",
+    "urllib3": "network",
+    "ftplib": "network",
+    "smtplib": "network",
+    "imaplib": "network",
+    "poplib": "network",
+    "telnetlib": "network",
+    "xmlrpc": "network",
+    "webbrowser": "network",
+    "subprocess": "process",
+    "multiprocessing": "process",
+    "asyncio": "process",
+    "ctypes": "process",
+    "pickle": "deserialize",
+    "marshal": "deserialize",
+    "eval": "dynamic",
+    "exec": "dynamic",
+    "compile": "dynamic",
+    "__import__": "dynamic",
+    "breakpoint": "dynamic",
+    "input": "dynamic",
+    "open": "filesystem",
+}
+
+
+def capability_for(finding: Finding) -> str:
+    root = finding.name.split(".")[0]
+    return _CAPABILITY.get(root, "unknown")
+
+
+def blocking(findings: list[Finding], granted: set[str]) -> list[Finding]:
+    """Findings that enforcement should refuse, given the capabilities on hand."""
+    out = []
+    for finding in findings:
+        if finding.tier >= 3:
+            out.append(finding)  # never grantable
+        elif finding.tier == 2 and capability_for(finding) not in granted:
+            out.append(finding)
+    return out
+
+
+def refusal(blocked: list[Finding]) -> str:
+    """Explain a refusal and name the two ways forward.
+
+    The second route is the important one: the friction of the capability
+    boundary is what channels privileged work into named, reviewed, reusable
+    helpers, so every wall the agent hits is an invitation to propose something.
+    """
+    lines = ["BLOCKED — this session does not have the capabilities this code needs:"]
+    for finding in dict.fromkeys(blocked):
+        capability = capability_for(finding)
+        if finding.tier >= 3:
+            lines.append(f"  {finding.describe()} — refused outright, not grantable")
+        else:
+            lines.append(f"  {finding.describe()} — needs capability `{capability}`")
+
+    grantable = sorted(
+        {capability_for(f) for f in blocked if f.tier == 2 and capability_for(f) != "unknown"}
+    )
+    lines.append("")
+    lines.append("Two ways forward:")
+    lines.append(
+        "  1. propose_helper(...) — package this as a reviewed helper. Approved once, "
+        "it may use the capability forever, and every later session gets it too. This "
+        "is usually the right answer."
+    )
+    if grantable:
+        lines.append(
+            f"  2. request_capability({grantable[0]!r}) — a one-off grant for this "
+            "session only. The human is asked every time."
+        )
+    return "\n".join(lines)

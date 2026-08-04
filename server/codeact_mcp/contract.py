@@ -23,18 +23,18 @@ DEFAULT_TIMEOUT = 30.0
 
 _RUNNER = r"""
 import contextlib, io, json, sys, traceback
-sys.path.insert(0, {server!r})
+sys.path.insert(0, __SERVER__)
 import importlib.util
 
-spec = importlib.util.spec_from_file_location("codeact_example_target", {path!r})
+spec = importlib.util.spec_from_file_location("codeact_example_target", __PATH__)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 ns = dict(vars(module))
 results = []
-for example in {examples!r}:
+for example in __EXAMPLES__:
     buf = io.StringIO()
-    entry = {{"code": example["code"], "note": example.get("note", "")}}
+    entry = {"code": example["code"], "note": example.get("note", "")}
     wants_error = example.get("raises", False)
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -79,7 +79,13 @@ def run_examples(path: Path, examples: list[dict], timeout: float = DEFAULT_TIME
     if not examples:
         return []
 
-    script = _RUNNER.format(server=str(SERVER_DIR), path=str(path), examples=examples)
+    # Placeholder substitution, not str.format: this template is Python source
+    # containing dict and set literals, and a stray brace would break it.
+    script = (
+        _RUNNER.replace("__SERVER__", repr(str(SERVER_DIR)))
+        .replace("__PATH__", repr(str(path)))
+        .replace("__EXAMPLES__", repr(examples))
+    )
     try:
         proc = subprocess.run(
             [sys.executable, "-c", script],

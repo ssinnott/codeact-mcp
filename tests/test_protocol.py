@@ -85,11 +85,51 @@ class TestProtocol(unittest.TestCase):
                 "restart_session",
                 "search_helpers",
                 "describe_helper",
+                "propose_helper",
+                "helper_source",
+                "request_capability",
             },
         )
         for tool in tools:
             self.assertTrue(tool["description"].strip())
             self.assertEqual(tool["inputSchema"]["type"], "object")
+
+    def test_capability_grant_always_prompts_the_human(self):
+        # requiresUserInteraction means it can never be pre-allowlisted away.
+        tools = {t["name"]: t for t in self.c.call("tools/list")["result"]["tools"]}
+        meta = tools["request_capability"].get("_meta") or {}
+        self.assertTrue(meta.get("anthropic/requiresUserInteraction"))
+
+    def test_propose_helper_reports_every_gate_problem_at_once(self):
+        out = self.c.tool(
+            "propose_helper",
+            name="bad",
+            source="from codeact import helper\n\ndef bad(x):\n    return x\n",
+        )
+        self.assertIn("did NOT pass the gate", out)
+
+    def test_a_complete_proposal_is_accepted_but_not_installed(self):
+        source = (
+            "from codeact import helper\n\n"
+            "@helper(job='transform', domains=['text'], examples=[{'code': \"shout('a')\"}])\n"
+            "def shout(text: str) -> str:\n"
+            '    """Uppercase a string for emphasis in output.\n\n'
+            "    Use when: rendering a heading.\n"
+            "    Don't use when: it is already uppercase.\n"
+            "    Args:\n        text: any string\n"
+            "    Returns:\n        the same string in upper case\n"
+            '    """\n'
+            "    return text.upper()\n"
+        )
+        out = self.c.tool("propose_helper", name="shout", source=source)
+        self.assertIn("pending review", out)
+        self.assertIn("not callable until then", out)
+        # Still not in the interpreter.
+        self.assertIn("NameError", self.c.tool("run_python", code="shout('x')"))
+
+    def test_helper_source_is_available_for_revision(self):
+        out = self.c.tool("helper_source", name="read_jsonl", reason="proposing a revision")
+        self.assertIn("def read_jsonl", out)
 
     def test_search_helpers_returns_index_lines(self):
         out = self.c.tool("search_helpers", task="read a jsonl file of records")
