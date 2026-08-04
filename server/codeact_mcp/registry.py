@@ -67,13 +67,32 @@ def _sidecar(path: Path) -> dict:
         return {}
 
 
-def write_sidecar(path: Path, captured: list[dict], **extra) -> None:
+def write_sidecar(path: Path, captured: list[dict], helper: str = "", **extra) -> None:
+    """Record captured example output, keyed by helper.
+
+    A file may define more than one helper, and each has its own examples, so a
+    flat list here would let the second capture silently erase the first.
+    Existing entries for other helpers in the same file are preserved.
+    """
+    side = path.with_suffix(".json")
+    existing = _sidecar(path)
+    helpers = dict(existing.get("helpers") or {})
+    if helper:
+        helpers[helper] = captured
     payload = {
-        "captured": captured,
+        "helpers": helpers,
         "source_hash": source_hash(path.read_text()),
         **extra,
     }
-    path.with_suffix(".json").write_text(json.dumps(payload, indent=2) + "\n")
+    side.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _captured_for(side: dict, name: str) -> list[dict]:
+    helpers = side.get("helpers")
+    if isinstance(helpers, dict):
+        return helpers.get(name) or []
+    # Legacy flat form, written before sidecars were keyed by helper.
+    return side.get("captured") or []
 
 
 def _load_file(path: Path, builtin: bool) -> Iterator[Entry]:
@@ -96,7 +115,7 @@ def _load_file(path: Path, builtin: bool) -> Iterator[Entry]:
             continue
         if getattr(value, "__module__", None) != module.__name__:
             continue  # imported from another helper, not defined here
-        card = cards.build(value, side.get("captured"))
+        card = cards.build(value, _captured_for(side, value.__name__))
         card.quarantine = quarantine
         yield Entry(card=card, fn=value, path=path, builtin=builtin)
 
@@ -118,6 +137,16 @@ class Registry:
                     continue
                 try:
                     for entry in _load_file(path, builtin):
+                        prior = self.entries.get(entry.name)
+                        # Shadowing a seed from the user library is intended; two
+                        # files in the same scope claiming one name is a mistake,
+                        # and silently keeping whichever sorted last would make it
+                        # very hard to find.
+                        if prior is not None and prior.builtin == builtin:
+                            self.errors.append(
+                                f"{path.name}: duplicate helper {entry.name!r}, "
+                                f"already defined in {prior.path.name}"
+                            )
                         self.entries[entry.name] = entry
                 except Exception as exc:
                     self.errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
@@ -147,10 +176,32 @@ class Registry:
 
 
 _registry: Registry | None = None
+_stamp: tuple | None = None
+
+
+def _dir_stamp() -> tuple:
+    """Cheap fingerprint of the helper directories."""
+    marks = []
+    for directory in (SEEDS_DIR, paths.helpers_dir()):
+        try:
+            marks.append(
+                tuple(sorted((p.name, p.stat().st_mtime_ns) for p in directory.glob("*.py")))
+            )
+        except OSError:
+            marks.append(())
+    return tuple(marks)
 
 
 def registry(reload: bool = False) -> Registry:
-    global _registry
-    if _registry is None or reload:
+    """The loaded library, re-read whenever the helper files change.
+
+    The server is long-lived, so caching forever would mean a helper approved
+    mid-session stays invisible until restart — exactly when the agent has just
+    been told it now exists.
+    """
+    global _registry, _stamp
+    stamp = _dir_stamp()
+    if _registry is None or reload or stamp != _stamp:
         _registry = Registry().load()
+        _stamp = stamp
     return _registry

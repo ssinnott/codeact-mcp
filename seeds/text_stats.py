@@ -58,7 +58,10 @@ def text_stats(text: str) -> dict:
         start at 1, so 0 is unambiguous.
 
     Notes:
-        On a tie the earliest longest line wins. Lengths are counts of Python
+        On a tie the earliest longest line wins. Splitting uses str.splitlines,
+        which also breaks on rarer separators — form feed, vertical tab,
+        \\u2028 — so text carrying those counts more lines than it visibly has.
+        Lengths are counts of Python
         characters (code points): a tab is 1 regardless of display width, and an
         emoji or accented letter is 1 even though it is several bytes on disk.
     """

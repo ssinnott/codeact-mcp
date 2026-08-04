@@ -55,6 +55,20 @@ def _format(payload: dict, findings: list) -> str:
     return "\n\n".join(parts) if parts else "(no output)"
 
 
+def _error_type(error: str | None) -> str | None:
+    """The exception class from a formatted traceback.
+
+    It is on the LAST line, not the first — splitting the whole traceback on its
+    first colon yields "Traceback (most recent call last)", which would make the
+    corpus's error_type field useless for exactly the failure clustering the
+    miner will want it for.
+    """
+    if not error:
+        return None
+    last = error.strip().splitlines()[-1]
+    return last.split(":", 1)[0].strip() or None
+
+
 def build() -> Server:
     server = Server("codeact", VERSION)
 
@@ -111,7 +125,7 @@ def build() -> Server:
             outcome="error" if error else "ok",
             duration_ms=elapsed,
             guard_findings=findings,
-            error_type=error.strip().split(":")[0].splitlines()[-1] if error else None,
+            error_type=_error_type(error),
         )
         return _format(payload, findings)
 

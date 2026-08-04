@@ -22,6 +22,42 @@ def _matches(patterns: Sequence[str], rel: str, name: str) -> bool:
     return False
 
 
+def _clean(patterns: Sequence[str], argname: str) -> list[str]:
+    """Reject unusable pattern arguments loudly; return patterns ready to match.
+
+    The bare string is the trap worth raising over: "*.py" satisfies
+    Sequence[str] and then iterates one character at a time into the patterns
+    "*", ".", "p", "y" — and "*" matches everything, so the caller gets a
+    plausible-looking list of the wrong files with no error anywhere.
+    """
+    if isinstance(patterns, (str, bytes)):
+        shown = patterns.decode(errors="replace") if isinstance(patterns, bytes) else patterns
+        raise TypeError(
+            f"{argname} must be a sequence of patterns, not a bare string: pass "
+            f"[{shown!r}], not {shown!r} (e.g. ['*.py'], not '*.py'). A bare string "
+            "is iterated character by character, so '*' alone would match everything."
+        )
+
+    cleaned: list[str] = []
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            raise TypeError(
+                f"{argname} patterns must be strings, got "
+                f"{type(pattern).__name__}: {pattern!r}"
+            )
+        if pattern.startswith("/") or os.path.isabs(pattern):
+            raise ValueError(
+                f"{argname} pattern {pattern!r} is absolute, and patterns are matched "
+                "against paths relative to root — it would never match. Drop the root "
+                "prefix: pass 'src/*.py', not '/home/me/proj/src/*.py'."
+            )
+        stripped = (pattern[2:] if pattern.startswith("./") else pattern).rstrip("/")
+        if not stripped:
+            raise ValueError(f"{argname} pattern {pattern!r} is empty; it can never match")
+        cleaned.append(stripped)
+    return cleaned
+
+
 @helper(
     job="inspect",
     domains=["fs"],
@@ -52,7 +88,34 @@ def _matches(patterns: Sequence[str], rel: str, name: str) -> bool:
         },
         {
             "code": "_rel(find_files(_root, include=['src/*']))",
-            "note": "a pattern containing '/' is matched against the path relative to root",
+            "note": (
+                "a pattern containing '/' is matched against the path relative to "
+                "root, never against the bare filename"
+            ),
+        },
+        {
+            "code": "_rel(find_files(_root, include=['util.py']))",
+            "note": (
+                "no '/' in the pattern, so it is matched against the bare filename "
+                "at any depth — src/util.py is found without naming src"
+            ),
+        },
+        {
+            "code": "find_files(_root, include='*.py')",
+            "note": (
+                "a bare string is refused: it satisfies Sequence[str] but iterates "
+                "into '*', '.', 'p', 'y', and '*' would match every file. "
+                "Pass ['*.py'], not '*.py'"
+            ),
+            "raises": True,
+        },
+        {
+            "code": "find_files(_root, include=[os.path.join(_root, 'src', '*.py')])",
+            "note": (
+                "patterns are matched against root-relative paths, so an absolute "
+                "pattern is an error rather than a silent empty result"
+            ),
+            "raises": True,
         },
         {
             "code": "find_files(os.path.join(_root, 'does-not-exist'))",
@@ -84,16 +147,28 @@ def find_files(
             directory. Results are built by joining onto this string, so a
             relative root gives relative results and an absolute root gives
             absolute ones.
-        include: Glob patterns; a file is kept if it matches at least one. A
-            pattern containing "/" is matched against the file's path relative
-            to root in POSIX form ("src/*.py", "**/x" is NOT special — use
-            "*/x"); a pattern without "/" is matched against the bare filename
-            ("*.py"). Default ("*",) keeps everything. Passing an empty sequence
-            matches nothing and returns [].
-        exclude: Glob patterns that reject. Matched the same way as include, and
-            applied after it, so exclude always wins. A pattern that matches a
-            directory (by name or relative path) prunes that whole subtree, which
-            is the cheap way to skip "build" or "docs/_generated".
+        include: Glob patterns; a file is kept if it matches at least one. Must
+            be a list or tuple of strings — a bare string raises TypeError
+            rather than being iterated one character at a time. What a pattern
+            is matched against depends on whether it contains "/": with a "/"
+            it is matched against the file's path relative to root and nothing
+            else ("src/*.py" tested against "src/util.py"); without a "/" it is
+            matched against the bare filename and nothing else ("*.py" tested
+            against "util.py"), which hits files at every depth. Relative paths
+            are built with "/" separators on every platform, so patterns always
+            use "/" too. Patterns are relative to root and never absolute: a
+            leading "./" and any trailing "/" are ignored ("./src/" means
+            "src"), and an absolute pattern raises ValueError instead of
+            quietly matching nothing. This is fnmatch, not pathlib.glob — "*"
+            also matches "/", so "src/*.py" reaches nested files at any depth
+            and "**" buys you nothing. Default ("*",) keeps everything; an
+            empty sequence keeps nothing and returns [].
+        exclude: Glob patterns that reject, with the same type rule and the same
+            "/" rule as include, applied after it, so exclude always wins. A
+            directory is tested the same way — by its bare name if the pattern
+            has no "/", by its path relative to root if it does — and a match
+            prunes that whole subtree, which is the cheap way to skip "build" or
+            "docs/_generated". Default () rejects nothing.
         follow_symlinks: Descend into directories that are symlinks. Default
             False. Symlinks pointing at files are returned either way; this only
             controls recursion, and setting it True on a tree with a symlink
@@ -105,6 +180,13 @@ def find_files(
         matches gives an empty list.
 
     Raises:
+        TypeError: include or exclude was a bare string instead of a sequence of
+            them — pass ['*.py'], not '*.py' — or an element of one was not a
+            string. Checked before root, and before any pattern is used.
+        ValueError: a pattern is absolute, or is empty once "./" and trailing
+            "/" are removed. Absolute patterns are rejected because matching
+            happens against root-relative paths, so strip the root prefix and
+            pass 'src/*.py'.
         FileNotFoundError: root does not exist — check the path before retrying;
             an empty result would otherwise hide the typo.
         NotADirectoryError: root exists but is a file. Pass its parent.
@@ -118,6 +200,11 @@ def find_files(
         Unreadable subdirectories are skipped silently rather than raising, so a
         permission-denied corner of the tree yields fewer results, not a crash.
     """
+    # Argument shape first: a bad pattern is the caller's typo either way, and
+    # reporting it before touching the disk keeps the message about the typo.
+    includes = _clean(include, "include")
+    excludes = _clean(exclude, "exclude")
+
     if not os.path.exists(root):
         raise FileNotFoundError(f"no such directory: {root}")
     if not os.path.isdir(root):
@@ -128,7 +215,7 @@ def find_files(
         kept_dirs = []
         for name in dirnames:
             rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
-            if name in NOISE_DIRS or _matches(exclude, rel, name):
+            if name in NOISE_DIRS or _matches(excludes, rel, name):
                 continue
             kept_dirs.append(name)
         dirnames[:] = kept_dirs
@@ -136,9 +223,9 @@ def find_files(
         for name in filenames:
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root).replace(os.sep, "/")
-            if not _matches(include, rel, name):
+            if not _matches(includes, rel, name):
                 continue
-            if _matches(exclude, rel, name):
+            if _matches(excludes, rel, name):
                 continue
             found.append(full)
     return sorted(found)

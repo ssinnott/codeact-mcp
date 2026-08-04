@@ -13,6 +13,7 @@ server with it.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,12 +40,22 @@ for example in {examples!r}:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             if example.get("setup"):
                 exec(example["setup"], ns)
+            # Decide eval-vs-exec by compiling, never by catching SyntaxError
+            # from the run: an example that legitimately raises SyntaxError at
+            # runtime (compile(), ast.parse()) would otherwise execute twice,
+            # and any side effect it had would happen twice with it.
             try:
-                value = eval(example["code"], ns)
+                compiled = compile(example["code"], "<example>", "eval")
+                is_expression = True
+            except SyntaxError:
+                compiled = compile(example["code"], "<example>", "exec")
+                is_expression = False
+            if is_expression:
+                value = eval(compiled, ns)
                 if value is not None:
                     print(repr(value))
-            except SyntaxError:
-                exec(example["code"], ns)
+            else:
+                exec(compiled, ns)
         entry["output"] = buf.getvalue().strip()
         # An example flagged as demonstrating a failure but which succeeded is
         # itself a defect: the documented failure mode no longer happens.
@@ -88,6 +99,11 @@ def run_examples(path: Path, examples: list[dict], timeout: float = DEFAULT_TIME
     # Splitting on the last occurrence means only the runner's own trailing
     # payload is ever parsed.
     _, marker, payload = proc.stdout.rpartition(MARKER)
+    if marker:
+        try:
+            return json.loads(payload.strip())
+        except json.JSONDecodeError:
+            marker = ""  # fall through and report it as a runner failure
     if not marker:
         detail = (proc.stderr or proc.stdout).strip()[-500:]
         return [
@@ -99,20 +115,42 @@ def run_examples(path: Path, examples: list[dict], timeout: float = DEFAULT_TIME
             }
             for ex in examples
         ]
-    return json.loads(payload.strip())
+    return []
+
+
+# Output that legitimately differs between runs. Without this, any example
+# touching a temp file reports drift forever — and a drift check that always
+# fires is one nobody reads.
+_VOLATILE = [
+    re.compile(r"/tmp/[\w./-]+"),
+    re.compile(r"[A-Za-z]:\\\\Users\\\\[\w\\\\.-]+"),
+    re.compile(r"0x[0-9a-fA-F]{6,}"),
+    re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?"),
+    re.compile(r"\b\d+\.\d{4,}\b"),  # unrounded timings
+]
+
+
+def normalize(text: str) -> str:
+    for pattern in _VOLATILE:
+        text = pattern.sub("<varies>", text)
+    return text.strip()
 
 
 def compare(captured: list[dict], fresh: list[dict]) -> list[str]:
-    """Differences between the card's recorded output and a fresh run."""
+    """Real differences between a card's recorded output and a fresh run.
+
+    Paired by position, not by code string: two examples may legitimately share
+    the same code (different setup), and keying by code would collapse them and
+    then report the survivor as drifting against the wrong baseline.
+    """
     drift: list[str] = []
-    by_code = {entry["code"]: entry for entry in captured}
-    for entry in fresh:
-        was = by_code.get(entry["code"])
-        if was is None:
+    for was, now in zip(captured, fresh):
+        if was.get("code") != now.get("code"):
+            # The example set itself changed — that is a revision, not drift.
             continue
-        if (was.get("output") or "") != (entry.get("output") or ""):
+        if normalize(was.get("output") or "") != normalize(now.get("output") or ""):
             drift.append(
-                f"`{entry['code']}` documented {was.get('output')!r} "
-                f"but now produces {entry.get('output')!r}"
+                f"`{now['code']}` documented {was.get('output')!r} "
+                f"but now produces {now.get('output')!r}"
             )
     return drift

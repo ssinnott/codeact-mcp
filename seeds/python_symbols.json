@@ -1,23 +1,25 @@
 {
-  "captured": [
-    {
-      "code": "python_symbols(str(_mod))",
-      "note": "the file defines load (line 6), a decorated save, an async fetch and class Store; save reports its 'def' line 13, not its @register line 12, and the nested _inner and the method put are absent because neither is top level",
-      "output": "[{'name': 'load', 'kind': 'function', 'line': 6, 'has_docstring': True}, {'name': 'save', 'kind': 'function', 'line': 13, 'has_docstring': False}, {'name': 'fetch', 'kind': 'async function', 'line': 16, 'has_docstring': True}, {'name': 'Store', 'kind': 'class', 'line': 20, 'has_docstring': True}]",
-      "ok": true
-    },
-    {
-      "code": "python_symbols(str(_empty))",
-      "note": "a module with no def or class gives an empty list, not an error",
-      "output": "[]",
-      "ok": true
-    },
-    {
-      "code": "python_symbols(str(_broken))",
-      "note": "unparsable source raises rather than returning a partial list",
-      "output": "File \"/tmp/tmpwtvy0k29/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
-      "ok": true
-    }
-  ],
+  "helpers": {
+    "python_symbols": [
+      {
+        "code": "python_symbols(str(_mod))",
+        "note": "the file defines load (line 6), a decorated save, an async fetch and class Store; save reports its 'def' line 13, not its @register line 12, and the nested _inner and the method put are absent because neither is top level",
+        "output": "[{'name': 'load', 'kind': 'function', 'line': 6, 'has_docstring': True}, {'name': 'save', 'kind': 'function', 'line': 13, 'has_docstring': False}, {'name': 'fetch', 'kind': 'async function', 'line': 16, 'has_docstring': True}, {'name': 'Store', 'kind': 'class', 'line': 20, 'has_docstring': True}]",
+        "ok": true
+      },
+      {
+        "code": "python_symbols(str(_empty))",
+        "note": "a module with no def or class gives an empty list, not an error",
+        "output": "[]",
+        "ok": true
+      },
+      {
+        "code": "python_symbols(str(_broken))",
+        "note": "unparsable source raises rather than returning a partial list",
+        "output": "File \"/tmp/tmpzcj2oz_q/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
+        "ok": true
+      }
+    ]
+  },
   "source_hash": "a64f5734e5bbc474"
 }

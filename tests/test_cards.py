@@ -78,6 +78,25 @@ class TestDocstringParsing(unittest.TestCase):
         self.assertEqual(parsed.summary, "Summary here.")
         self.assertEqual(list(parsed.args), ["x"])
 
+    def test_a_parameter_named_like_a_section_is_not_a_section(self):
+        # A parameter genuinely called `notes`, `params` or `return` sits
+        # indented under Args:. Matching the stripped line would read it as a
+        # new section header and silently drop everything documented after it.
+        doc = (
+            "Summary line that is long enough.\n\n"
+            "Use when: always\n"
+            "Don't use when: never\n"
+            "Args:\n"
+            "    params: a dict of parameters\n"
+            "    notes: free text\n"
+            "    x: another thing\n"
+            "Returns:\n"
+            "    a value of the expected shape\n"
+        )
+        parsed = cards.parse_docstring(doc)
+        self.assertEqual(list(parsed.args), ["params", "notes", "x"])
+        self.assertTrue(parsed.returns.startswith("a value"))
+
     def test_empty_docstring(self):
         self.assertEqual(cards.parse_docstring(None).summary, "")
         self.assertEqual(cards.parse_docstring("").args, {})

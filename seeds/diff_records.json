@@ -1,29 +1,31 @@
 {
-  "captured": [
-    {
-      "code": "diff_records(_before, _after, 'id')",
-      "note": "id 1 is unchanged so it appears nowhere; id 2 lists both differing fields",
-      "output": "{'added': [{'id': 4, 'status': 'new', 'owner': 'di'}], 'removed': [{'id': 3, 'status': 'done', 'owner': 'cy'}], 'changed': [{'key': 2, 'changes': {'status': {'old': 'open', 'new': 'closed'}, 'owner': {'old': 'bo', 'new': 'ana'}}}]}",
-      "ok": true
-    },
-    {
-      "code": "diff_records(_before, _after, 'id', ignore=['owner'])",
-      "note": "ignore drops a field from the comparison \u2014 here only 'status' can differ",
-      "output": "{'added': [{'id': 4, 'status': 'new', 'owner': 'di'}], 'removed': [{'id': 3, 'status': 'done', 'owner': 'cy'}], 'changed': [{'key': 2, 'changes': {'status': {'old': 'open', 'new': 'closed'}}}]}",
-      "ok": true
-    },
-    {
-      "code": "diff_records([{'id': 1, 'a': 1}], [{'id': 1, 'b': 2}], 'id')",
-      "note": "a field on only one side reports just 'old' (dropped) or just 'new' (added)",
-      "output": "{'added': [], 'removed': [], 'changed': [{'key': 1, 'changes': {'a': {'old': 1}, 'b': {'new': 2}}}]}",
-      "ok": true
-    },
-    {
-      "code": "diff_records([{'id': 1}, {'id': 1}], [], 'id')",
-      "note": "a repeated key means the field does not identify a record",
-      "output": "ValueError: duplicate id=1 in before; the key must identify one record",
-      "ok": true
-    }
-  ],
+  "helpers": {
+    "diff_records": [
+      {
+        "code": "diff_records(_before, _after, 'id')",
+        "note": "id 1 is unchanged so it appears nowhere; id 2 lists both differing fields",
+        "output": "{'added': [{'id': 4, 'status': 'new', 'owner': 'di'}], 'removed': [{'id': 3, 'status': 'done', 'owner': 'cy'}], 'changed': [{'key': 2, 'changes': {'status': {'old': 'open', 'new': 'closed'}, 'owner': {'old': 'bo', 'new': 'ana'}}}]}",
+        "ok": true
+      },
+      {
+        "code": "diff_records(_before, _after, 'id', ignore=['owner'])",
+        "note": "ignore drops a field from the comparison \u2014 here only 'status' can differ",
+        "output": "{'added': [{'id': 4, 'status': 'new', 'owner': 'di'}], 'removed': [{'id': 3, 'status': 'done', 'owner': 'cy'}], 'changed': [{'key': 2, 'changes': {'status': {'old': 'open', 'new': 'closed'}}}]}",
+        "ok": true
+      },
+      {
+        "code": "diff_records([{'id': 1, 'a': 1}], [{'id': 1, 'b': 2}], 'id')",
+        "note": "a field on only one side reports just 'old' (dropped) or just 'new' (added)",
+        "output": "{'added': [], 'removed': [], 'changed': [{'key': 1, 'changes': {'a': {'old': 1}, 'b': {'new': 2}}}]}",
+        "ok": true
+      },
+      {
+        "code": "diff_records([{'id': 1}, {'id': 1}], [], 'id')",
+        "note": "a repeated key means the field does not identify a record",
+        "output": "ValueError: duplicate id=1 in before; the key must identify one record",
+        "ok": true
+      }
+    ]
+  },
   "source_hash": "58694a40e9970382"
 }

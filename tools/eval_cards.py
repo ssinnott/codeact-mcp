@@ -73,15 +73,25 @@ FIXTURES: dict[str, str] = {
 }
 
 
+def helper_name(raw: str) -> str:
+    """Readers sometimes echo the whole signature; take the identifier."""
+    return raw.split("(")[0].strip()
+
+
 def run_case(case: dict, namespace: dict) -> tuple[bool, str]:
     ns = dict(namespace)
     buf = io.StringIO()
-    fixture = FIXTURES.get(case["helper"], "")
+    fixture = FIXTURES.get(helper_name(case["helper"]), "")
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             if fixture:
                 exec(fixture, ns)
             exec(case["code"], ns)
+    except SyntaxError:
+        # The submission never compiled — prose leaked into the code block. That
+        # is a defect in the answer's format, not evidence about the card, so it
+        # is reported separately rather than scored against the helper.
+        return "malformed", traceback.format_exception_only(*sys.exc_info()[:2])[-1].strip()
     except BaseException:
         return False, traceback.format_exception_only(*sys.exc_info()[:2])[-1].strip()
     return True, buf.getvalue().strip()[:160]
@@ -104,20 +114,25 @@ def main() -> int:
         import os
 
         os.chdir(cwd)  # fixtures may chdir
-        ran += ok
+        ran += ok is True
         claimed += bool(case.get("sufficient"))
-        rows.append((case["helper"], ok, bool(case.get("sufficient")), case.get("missing") or [], detail))
+        rows.append((helper_name(case["helper"]), ok, bool(case.get("sufficient")), case.get("missing") or [], detail))
 
     total = len(cases)
     print(f"{'run':>4} {'said':>5}  helper")
     print("-" * 78)
     for helper, ok, said, missing, detail in sorted(rows):
-        print(f"{'ok' if ok else 'FAIL':>4} {'yes' if said else 'no':>5}  {helper}")
-        if not ok:
+        label = {True: "ok", False: "FAIL", "malformed": "n/a"}[ok]
+        print(f"{label:>4} {'yes' if said else 'no':>5}  {helper}")
+        if ok is not True:
             print(f"                {detail}")
     print("-" * 78)
-    print(f"code runs from the card alone   {ran}/{total}  ({ran / total:.0%})")
+    malformed = [h for h, ok, _, _, _ in rows if ok == "malformed"]
+    scored = total - len(malformed)
+    print(f"code runs from the card alone   {ran}/{scored}  ({ran / scored:.0%} of well-formed)")
     print(f"reader judged the card enough   {claimed}/{total}  ({claimed / total:.0%})")
+    if malformed:
+        print(f"excluded, submission would not compile: {', '.join(sorted(malformed))}")
 
     gaps = [(h, m) for h, _, _, m, _ in rows if m]
     if gaps:
@@ -128,11 +143,11 @@ def main() -> int:
 
     # A card that produced working code but left the reader guessing still has a
     # defect — the next reader may guess differently.
-    silent = [h for h, ok, said, m, _ in rows if ok and not said]
+    silent = [h for h, ok, said, m, _ in rows if ok is True and not said]
     if silent:
         print(f"\nRan but the reader was not confident: {', '.join(sorted(silent))}")
 
-    return 0 if ran == total else 1
+    return 0 if ran == scored else 1
 
 
 if __name__ == "__main__":

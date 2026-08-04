@@ -1,29 +1,31 @@
 {
-  "captured": [
-    {
-      "code": "extract_code_blocks(_md)",
-      "note": "every fence, in document order; the untagged block gets lang ''",
-      "output": "[{'lang': 'python', 'code': 'print(\"hi\")', 'start_line': 3}, {'lang': '', 'code': 'echo untagged', 'start_line': 9}, {'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
-      "ok": true
-    },
-    {
-      "code": "extract_code_blocks(_md, lang='JSON')",
-      "note": "the lang filter is case-insensitive and matches ~~~ fences too",
-      "output": "[{'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
-      "ok": true
-    },
-    {
-      "code": "extract_code_blocks(_md, lang='')",
-      "note": "lang='' selects exactly the fences that carried no language tag",
-      "output": "[{'lang': '', 'code': 'echo untagged', 'start_line': 9}]",
-      "ok": true
-    },
-    {
-      "code": "extract_code_blocks('no fences here, just prose')",
-      "note": "no blocks is an empty list, not an error",
-      "output": "[]",
-      "ok": true
-    }
-  ],
+  "helpers": {
+    "extract_code_blocks": [
+      {
+        "code": "extract_code_blocks(_md)",
+        "note": "every fence, in document order; the untagged block gets lang ''",
+        "output": "[{'lang': 'python', 'code': 'print(\"hi\")', 'start_line': 3}, {'lang': '', 'code': 'echo untagged', 'start_line': 9}, {'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang='JSON')",
+        "note": "the lang filter is case-insensitive and matches ~~~ fences too",
+        "output": "[{'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang='')",
+        "note": "lang='' selects exactly the fences that carried no language tag",
+        "output": "[{'lang': '', 'code': 'echo untagged', 'start_line': 9}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks('no fences here, just prose')",
+        "note": "no blocks is an empty list, not an error",
+        "output": "[]",
+        "ok": true
+      }
+    ]
+  },
   "source_hash": "6c0404053f26565e"
 }

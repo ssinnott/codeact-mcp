@@ -71,11 +71,23 @@ def parse_docstring(doc: str | None) -> Prose:
     if not lines:
         return prose
 
+    def section_at(line: str):
+        """A section header only counts at the left margin.
+
+        cleandoc puts section headers at column 0 and their entries below,
+        indented. Matching a stripped line instead would read a parameter
+        genuinely named `params`, `notes` or `return` as a new section and
+        silently drop every argument documented after it.
+        """
+        if line[:1].isspace():
+            return None
+        return SECTION_RE.match(line)
+
     # Summary runs until the first blank line or the first section header.
     summary: list[str] = []
     idx = 0
     for idx, line in enumerate(lines):
-        if not line.strip() or SECTION_RE.match(line.strip()):
+        if not line.strip() or section_at(line):
             break
         summary.append(line.strip())
     else:
@@ -98,7 +110,7 @@ def parse_docstring(doc: str | None) -> Prose:
             setattr(prose, current, " ".join("\n".join(buffer).split()))
 
     for line in lines[idx:]:
-        match = SECTION_RE.match(line.strip())
+        match = section_at(line)
         if match:
             flush()
             label = match.group(1).lower()

@@ -1,0 +1,43 @@
+{
+  "helpers": {
+    "write_jsonl": [
+      {
+        "code": "write_jsonl(str(_wp), [{'id': 1, 'ok': True}, {'id': 2, 'ok': False}])",
+        "note": "_wp is a path in a fresh temp dir; the return value is the number of records written",
+        "output": "2",
+        "ok": true
+      },
+      {
+        "code": "_wp.read_text()",
+        "note": "one compact JSON object per line, every line newline-terminated",
+        "output": "'{\"id\": 1, \"ok\": true}\\n{\"id\": 2, \"ok\": false}\\n'",
+        "ok": true
+      },
+      {
+        "code": "write_jsonl(str(_wp), [{'id': 3}], append=True)",
+        "note": "append=True keeps the two existing records and adds one",
+        "output": "1",
+        "ok": true
+      },
+      {
+        "code": "_wp.read_text()",
+        "note": "the appended record follows the originals",
+        "output": "'{\"id\": 1, \"ok\": true}\\n{\"id\": 2, \"ok\": false}\\n{\"id\": 3}\\n'",
+        "ok": true
+      },
+      {
+        "code": "write_jsonl(str(_wp), [{'id': 4}, {'when': object()}])",
+        "note": "a record that will not serialize aborts the whole write",
+        "output": "TypeError: Object of type object is not JSON serializable",
+        "ok": true
+      },
+      {
+        "code": "_wp.read_text()",
+        "note": "the failed write left the file exactly as it was \u2014 id 4 was never committed, which is the point of the temp-file-and-rename",
+        "output": "'{\"id\": 1, \"ok\": true}\\n{\"id\": 2, \"ok\": false}\\n{\"id\": 3}\\n'",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "b118cab261c2629c"
+}

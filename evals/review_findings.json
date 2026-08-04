@@ -1,0 +1,160 @@
+{
+  "core": [
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/cards.py",
+      "line": 101,
+      "severity": "high",
+      "summary": "parse_docstring strips indentation before matching SECTION_RE, so an Args entry whose parameter is named params/args/arguments/parameters/notes/returns is read as a new section header \u2014 the parameter is silently dropped and its neighbours' descriptions are corrupted.",
+      "failure_scenario": "Reproduced: docstring `Args:\\n    url: the endpoint to fetch\\n    params: query-string parameters\\n    timeout: seconds before giving up` parses to args={'url': 'the endpoint to fetch', 'timeout': 'seconds before giving up'} \u2014 `params` is gone. validate() then reports the false problem \"parameter 'params' is not documented in Args:\" and the rendered card omits the parameter entirely. Worse when the colliding name comes first: `Args:\\n    params: query-string parameters\\n    url: the endpoint to fetch\\n    timeout: seconds before giving up` parses to args={'url': 'the endpoint to fetch timeout: seconds before giving up'} \u2014 two of three parameters vanish and the survivor's description absorbs another's. Same mechanism fires for a legitimate indented continuation line beginning with a section keyword, e.g. `    strict: fail on bad rows.\\n        Notes: default is False.` ends the Args block and dumps every later parameter into prose.notes. Since the card is the entire interface the agent gets, it is handed a contract missing a required argument."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/registry.py",
+      "line": 99,
+      "severity": "high",
+      "summary": "The sidecar is per-file but examples are per-helper: when one .py defines two helpers, write_sidecar overwrites the file's captured list and _load_file hands it to every helper, so a card presents another helper's example as its own verified output.",
+      "failure_scenario": "Reproduced: a file pair.py defining shout() and whisper(), each with one example, run through tools/check.py --capture. check() calls registry.write_sidecar(entry.path, results) once per helper, so pair.json ends up holding only whisper's example. Reloading the registry produces a card for shout that reads:\n\n  shout(text: str) -> str\n  ...\n  Examples (output captured from real runs):\n    >>> whisper('HI')\n    'hi'\n\nBoth helpers ship the same block, labelled as observed rather than asserted. The agent is documented as trusting captured examples absolutely and cannot verify them, so this is exactly the hallucinated-example failure the design set out to make impossible. The loader explicitly iterates every decorated callable in the module, so multi-helper files are supported by the code path that breaks."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/contract.py",
+      "line": 108,
+      "severity": "medium",
+      "summary": "compare() keys captured entries by code string, so a helper with two examples sharing the same code collapses to the last one and reports drift against itself.",
+      "failure_scenario": "Reproduced against the shipped seed: `contract.compare(captured, captured)` on seeds/write_jsonl.json returns a drift entry \u2014 comparing a card's recorded output with a byte-identical copy of itself. write_jsonl has `_wp.read_text()` three times (after the initial write, after the append, after the failed write), which is the natural way to show state evolving. by_code keeps only the last, so fresh entry #1 is compared against captured entry #5 and reports `_wp.read_text()` documented '...{\"id\": 3}\\n' but now produces '...{\"id\": 2, \"ok\": false}\\n'. Since drift is the trigger for quarantining a helper, this permanently quarantines a correct helper. tests/test_registry.py's `assertFalse(compare(captured, captured))` passes only because its fixture has unique code strings."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/contract.py",
+      "line": 113,
+      "severity": "medium",
+      "summary": "compare() does exact string equality on captured output, so any example whose output embeds a temp path, timestamp or address reports drift on every clean re-run \u2014 3 of the 13 shipped seeds do.",
+      "failure_scenario": "Reproduced: load the real registry, re-run each helper's examples with run_examples and diff against the shipped sidecar. find_files, python_symbols and read_jsonl all report drift, e.g. `python_symbols(str(_broken))` documented 'File \"/tmp/tmp3d0lrmru/broken.py\", line 1 ... SyntaxError: invalid syntax' but now produces the same text with '/tmp/tmpbi1wk1af/'. The examples' own setup blocks call tempfile.mkdtemp(), so the path can never match across runs. Once the drift check is wired to quarantine, these three seeds disappear from Registry.available() and from the interpreter namespace on the first check after install, with a message saying their documented behaviour may no longer be true."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/contract.py",
+      "line": 102,
+      "severity": "medium",
+      "summary": "run_examples calls json.loads on the post-marker payload without guarding it, so anything written to real stdout after the runner's payload raises an unhandled JSONDecodeError that aborts the whole gate run rather than failing one helper.",
+      "failure_scenario": "Reproduced with a plausible helper (job=acquire, domains=[shell], side_effects=process) whose example is `start_tail()`, returning the pid of a subprocess.Popen child that prints when it finishes. subprocess.run waits for EOF on the inherited pipe, so the child's line lands after the payload; rpartition yields payload='[...]\\ncollector finished' and json.loads raises `json.decoder.JSONDecodeError: Extra data: line 2 column 1`. The exception escapes run_examples and tracebacks out of tools/check.py, so the operator sees a crash instead of a FAIL line and no other helper in the run is checked. An atexit handler that prints reproduces it identically. Note the marker-spoofing case the comment worries about is actually safe \u2014 json.dumps escapes \\x00 as \u0000 \u2014 so the real exposure is malformed trailing output, which is unhandled."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/contract.py",
+      "line": 46,
+      "severity": "medium",
+      "summary": "The runner wraps eval in `except SyntaxError` to fall back to exec, so an example whose code legitimately raises SyntaxError at runtime executes twice \u2014 doubling side effects and duplicating the captured output written into the card.",
+      "failure_scenario": "Reproduced against the shipped seed. seeds/python_symbols.py's third example, `python_symbols(str(_broken))` with raises=True, calls ast.parse on unparsable source; eval propagates the SyntaxError, the handler cannot tell it from an eval-of-a-statement, and exec re-runs the call. Instrumenting the seed with a call counter gives captured output 'call #1\\ncall #2\\n  File .../broken.py, line 1 ... SyntaxError: invalid syntax'. A second reproduction with a helper that prints before parsing captures 'parsing attempt #1\\nparsing attempt #2\\n...SyntaxError', i.e. the card records output the helper does not actually produce for one call. Any helper that raises SyntaxError and has side effects (writes a file, consumes a queue, POSTs) performs them twice at capture time, and the recorded traceback belongs to the second invocation."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/cards.py",
+      "line": 214,
+      "severity": "medium",
+      "summary": "The _signature fallback does .replace(\"'\", \"\") on the whole signature string, stripping quotes out of string default values and rendering a syntactically invalid signature in the card.",
+      "failure_scenario": "Reproduced: a helper using the standard `if TYPE_CHECKING:` import pattern \u2014 `def load_csv(path: str, sep: str = \",\", quote: str = \"'\", comment: str | None = None) -> pd.DataFrame` with pandas imported only under TYPE_CHECKING \u2014 makes inspect.signature(fn, eval_str=True) raise NameError, so the fallback runs. _signature returns `(path: str, sep: str = ,, quote: str = \"\", comment: str | None = None) -> pd.DataFrame` and the index line and card both render that. The comma default has lost its quotes and is not parseable, and the quote-character default is shown as the empty string rather than a single quote \u2014 so the agent, which is told the card is the complete interface, reads a wrong default for a parameter it is likely to pass."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/registry.py",
+      "line": 154,
+      "severity": "medium",
+      "summary": "registry() caches a process-global Registry that is never reloaded (reload=True has no call site), so the MCP server's helper views go stale for its whole lifetime while a restarted worker sees the new library.",
+      "failure_scenario": "Reproduced: call registry() with an empty ~/.codeact/helpers, write a valid helper file, call registry() again \u2014 it returns the identical cached object with no entries, while a freshly spawned process sees ['shout']. In normal use that means after tools/check.py or the review app approves a helper, search_helpers and describe_helper keep answering \"The helper library is empty\" / \"No helper named 'shout'\" until the MCP server is restarted. Session.restart() (the restart_session tool) spawns a new worker whose _preload() does reload from disk, so the two halves actively disagree: the agent can call the helper in run_python but the tools that document it deny it exists."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/server.py",
+      "line": 114,
+      "severity": "medium",
+      "summary": "error_type for the corpus is derived by splitting the traceback on its first colon, which for any runtime error is the colon ending \"Traceback (most recent call last):\" \u2014 so every runtime failure is logged with the same useless type.",
+      "failure_scenario": "Reproduced: worker.execute returns error='Traceback (most recent call last):\\n  File \"<codeact>\", line 1, in <module>\\nAttributeError: ...'. `error.strip().split(\":\")[0].splitlines()[-1]` evaluates to 'Traceback (most recent call last)'. The SyntaxError path happens to work (it yields 'SyntaxError') because format_exception_only has no traceback header, which is why the bug is invisible in casual testing. corpus.py documents itself as the miner's input and notes that history cannot be backfilled, so every runtime error recorded from now on carries a constant string instead of the exception type."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/worker.py",
+      "line": 71,
+      "severity": "low",
+      "summary": "_is_noise filters the literal name \"helpers\" rather than the facade object, so a user variable called helpers is invisible in both the state delta and session_state.",
+      "failure_scenario": "Reproduced end to end through Session: run `helpers = ['alice', 'bob']` \u2014 the response reports no state change; `len(helpers)` returns 2, confirming it is bound; `session_state` then answers \"The interpreter namespace is empty.\" The session_state tool description promises to \"List every name currently bound in the interpreter\". The same assignment also silently destroys the discovery facade, so a later `helpers.search(...)` fails with AttributeError: 'list' object has no attribute 'search' and nothing in the state view explains why."
+    },
+    {
+      "file": "/home/user/codeact-mcp/server/codeact_mcp/registry.py",
+      "line": 121,
+      "severity": "low",
+      "summary": "Registry.load overwrites entries by name with no error recorded, so two files in the same directory defining the same helper silently lose one \u2014 including from the gate, which iterates entries rather than files.",
+      "failure_scenario": "Reproduced: ~/.codeact/helpers/aaa.py and zzz.py both define shout(). Registry().load() gives errors=[] and entries={'shout': zzz.py}; calling it returns 'ZZZ:X'. aaa.py's helper is unreachable and unmentioned, and because tools/check.py iterates reg.entries.values() it is never validated or example-checked either \u2014 the operator gets a clean 1/1 report while one of their two authored helpers is not in the library at all. The documented shadowing rule only covers user-library-over-seeds, not collisions within one directory."
+    }
+  ],
+  "seeds": [
+    {
+      "file": "/home/user/codeact-mcp/seeds/find_files.py",
+      "line": 16,
+      "severity": "high",
+      "summary": "`include`/`exclude` are typed `Sequence[str]`, so a bare string satisfies the contract but is iterated per character \u2014 the card documents only list forms and never warns, so a string silently returns the wrong file set with no error.",
+      "failure_scenario": "find_files(root, include='*.py') on a tree holding a.py, b.txt, notes.md returns ['a.py', 'b.txt', 'notes.md'] \u2014 the leading '*' character becomes its own pattern and matches everything, so the agent lints/edits .txt and .md files. Symmetrically find_files(root, include=['*.py'], exclude='build') returns ['a.py', 'build/c.py'] \u2014 nothing is excluded, because the patterns become 'b','u','i','l','d' and no filename is one character long. A one-character name is then wrongly dropped: exclude='x' removes the file named 'x'. The list forms give the documented ['a.py'] and ['a.py'] respectively, so the two calls differ silently."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/to_markdown_table.py",
+      "line": 98,
+      "severity": "high",
+      "summary": "`records` is iterated twice (once to collect columns, once to build rows), so any one-shot iterable loses every data row silently; the card never states the input must be re-iterable, while the sibling write_jsonl card explicitly promises generator support.",
+      "failure_scenario": "to_markdown_table(map(lambda i: {'id': i}, [1, 2])) returns '| id  |\\n| --- |' \u2014 header and separator only, zero data rows, no exception. Same for filter(None, [{'id':1},{'id':2}]) and for any generator expression. The equivalent list([...]) returns the full four-line table. An agent that pipes a filter/map/generator straight in gets a plausible-looking empty table and no signal that the rows were dropped."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/diff_records.py",
+      "line": 112,
+      "severity": "high",
+      "summary": "`ignore` is typed `Collection[str]`, so a bare string type-checks but `set(ignore)` splits it into characters \u2014 the intended field is still diffed and any single-character field is silently dropped from the comparison.",
+      "failure_scenario": "diff_records([{'id':1,'owner':'a'}], [{'id':1,'owner':'b'}], 'id', ignore='owner') reports changed=[{'key':1,'changes':{'owner':{'old':'a','new':'b'}}}] \u2014 the field the caller asked to ignore is still reported. Conversely diff_records([{'id':1,'a':1,'b':1}], [{'id':1,'a':2,'b':2}], 'id', ignore='ab') returns all three lists empty, silently suppressing two real field changes. The list form ignore=['owner'] behaves as documented, so the two calls diverge with no error."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/write_jsonl.py",
+      "line": 120,
+      "severity": "medium",
+      "summary": "The temp-file-and-rename resets the target file's permission bits to mkstemp's private 0600, discarding the original mode; the card walks through the whole mechanism in Notes/Preconditions and never mentions it.",
+      "failure_scenario": "A file at 0644 (world-readable export, shared dataset) is rewritten: os.chmod(p, 0o644); write_jsonl(str(p), [{'a':2}]) leaves it at 0600. Every other user, service account, or container process that could read the file before can no longer read it, and the card's only stated post-condition is that 'the path holds either the old content or the whole new content'. Newly created files are 0600 too, so an agent writing an artifact for a downstream reader produces an unreadable one."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/write_jsonl.py",
+      "line": 116,
+      "severity": "medium",
+      "summary": "`json.dumps` emits bare NaN/Infinity for non-finite floats, so the helper writes syntactically invalid JSON while the card's Raises promises a TypeError for anything not serializable and the Notes promise the file 'is safe to read back line by line'.",
+      "failure_scenario": "write_jsonl(path, [{'lat': float('nan')}, {'lat': float('inf')}]) returns 2 and writes '{\"lat\": NaN}\\n{\"lat\": Infinity}\\n'. No exception is raised, so the agent reports success. Any strict JSON reader \u2014 jq, JS JSON.parse, Go, Rust, or Python's json.loads with parse_constant set to reject \u2014 fails on those lines. The card gives no hint: it only says each item 'must be JSON-serializable', which a float is, and summarize_numeric's own card warns that one bad CSV/JSON row will happily supply a NaN, so this path is live."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/parse_duration.py",
+      "line": 94,
+      "severity": "medium",
+      "summary": "`re.IGNORECASE` makes the unit class `[wdhms]` also match U+017F (LATIN SMALL LETTER LONG S), but `.lower()` does not fold it, so `_UNITS[...]` raises a bare KeyError \u2014 an exception type the card's Raises section does not list.",
+      "failure_scenario": "parse_duration('5\u017f') raises KeyError: '\u017f'. The card states the only failure mode is ValueError ('uses an unsupported or long-form unit'), and every other rejected unit behaves that way \u2014 parse_duration('3y') correctly raises ValueError. An agent writing the documented `try: parse_duration(v) except ValueError: <ask for a corrected value>` around a config/OCR-sourced value crashes instead of handling it. U+017F is the only character in the whole Unicode range with this behaviour, so it is invisible to any spot check."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/python_symbols.py",
+      "line": 122,
+      "severity": "medium",
+      "summary": "The file is read with encoding='utf-8' rather than 'utf-8-sig', so a Python source file carrying a UTF-8 BOM raises SyntaxError even though it is valid UTF-8 and valid Python that the running interpreter imports and executes.",
+      "failure_scenario": "A file whose bytes are b'\\xef\\xbb\\xbfdef hello():\\n    return 1\\n' imports and runs fine (python3 -c 'import bom; print(bom.hello())' prints 1), but python_symbols(path) raises SyntaxError: invalid non-printable character U+FEFF (line 1). The card's Raises says SyntaxError means 'the source does not parse... a file using newer syntax than this interpreter fails the same way', and the precondition says the file must be 'UTF-8 Python source for the running interpreter's grammar' \u2014 which it is. Indexing a repo with any Windows-editor-saved module, the agent concludes the file is syntactically broken and skips or 'fixes' a file that is fine."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/read_jsonl.py",
+      "line": 58,
+      "severity": "medium",
+      "summary": "The Raises section lists only FileNotFoundError and json.JSONDecodeError, but the code also propagates UnicodeDecodeError (which the card's own Preconditions implicitly require) and IsADirectoryError.",
+      "failure_scenario": "read_jsonl(path) on a latin-1-encoded file raises UnicodeDecodeError, and read_jsonl(some_dir) raises IsADirectoryError. Neither is in the card. The card even states 'Preconditions: The file must be UTF-8 encoded' \u2014 it knows the constraint but never says what violating it produces, so an agent that wraps the call in `except (FileNotFoundError, json.JSONDecodeError)` per the card still crashes on a mis-encoded input file. The sibling python_symbols card documents both exception types for the identical read, so the omission is inconsistent within the same library."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/to_markdown_table.py",
+      "line": 114,
+      "severity": "low",
+      "summary": "Padding uses str.ljust, which counts code points rather than display width, so the column alignment the card sells for terminal reading breaks on any CJK, emoji, or other wide character.",
+      "failure_scenario": "to_markdown_table([{'name':'\u65e5\u672c\u8a9e\u306e\u30bb\u30eb','n':1},{'name':'ascii','n':2}]) computes the column width as 6 (code points) while the cell occupies 12 terminal columns, so the rendered rows do not line up. The card's Use-when explicitly recommends it for 'terminal output where the padding keeps columns lined up' and the Returns section promises 'every cell space-padded to its column's width', with no caveat. text_stats' card carries exactly this code-point-vs-display-width warning, so the library knows to state it."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/retry_call.py",
+      "line": 15,
+      "severity": "low",
+      "summary": "Declares side_effects=\"none\" \u2014 defined in taxonomy.py as 'pure computation over its arguments' \u2014 while the helper's entire purpose is to invoke an arbitrary caller-supplied callable, and it additionally blocks on real time.sleep and consumes randomness.",
+      "failure_scenario": "retry_call(lambda: pathlib.Path('/tmp/side.txt').write_text('written by a pure helper')) creates the file, yet the card the agent reads renders 'job: orchestrate | domains: time' with side effects none. Measured wall-clock for retry_call(lambda: 1/0, attempts=4, delay=0.2, backoff=2.0) is 1.40s of sleeping, and `cost` is left unset even though the card's own Preconditions discuss worst-case runtime. taxonomy.py states orchestrate 'inherits whatever the helpers it calls require', so declaring none positively asserts something the code cannot guarantee."
+    },
+    {
+      "file": "/home/user/codeact-mcp/seeds/to_markdown_table.py",
+      "line": 106,
+      "severity": "low",
+      "summary": "The Returns section states the empty string is produced by 'no records and no explicit columns', but the actual trigger is an empty resolved column list, which also happens with non-empty records.",
+      "failure_scenario": "to_markdown_table([{}, {}]) returns '' despite two records being passed, and to_markdown_table([{'a':1}], columns=[]) returns '' despite both records and an explicit columns argument being supplied. An agent that treats '' as proof its record list was empty \u2014 the only reading the card supports \u2014 will misreport an empty result set when the real cause is keyless records or an empty column selection."
+    }
+  ]
+}

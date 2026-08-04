@@ -41,16 +41,26 @@ class TestFiltering(unittest.TestCase):
         found = search.search(POOL, jobs=["parse"])
         self.assertEqual({e.name for e in found}, {"read_jsonl", "parse_duration"})
 
-    def test_domain_filter_is_hard(self):
+    def test_domain_is_a_boost_not_a_filter(self):
+        # Cross-cutting helpers have no honest domain, so a domain filter would
+        # exclude the right answer for a reasonable query. It ranks instead.
         found = search.search(POOL, domains=["time"])
-        self.assertEqual({e.name for e in found}, {"parse_duration"})
+        self.assertEqual(found[0].name, "parse_duration")
+        self.assertEqual(len(found), len(POOL))
 
-    def test_filters_combine(self):
+    def test_domain_boost_orders_within_a_job(self):
         found = search.search(POOL, jobs=["parse"], domains=["fs"])
-        self.assertEqual({e.name for e in found}, {"read_jsonl"})
+        self.assertEqual(found[0].name, "read_jsonl")
+        self.assertIn("parse_duration", [e.name for e in found])
 
-    def test_impossible_combination_returns_empty(self):
-        self.assertEqual(search.search(POOL, jobs=["generate"], domains=["db"]), [])
+    def test_a_wrong_domain_does_not_lose_the_only_candidate(self):
+        # The retrieval eval's one miss: an orchestrate-job helper tagged `time`
+        # searched for with domains=["http"] must still be found.
+        found = search.search(POOL, jobs=["parse"], domains=["http"])
+        self.assertTrue(found)
+
+    def test_impossible_job_returns_empty(self):
+        self.assertEqual(search.search(POOL, jobs=["generate"]), [])
 
     def test_no_filters_returns_everything(self):
         self.assertEqual(len(search.search(POOL)), len(POOL))

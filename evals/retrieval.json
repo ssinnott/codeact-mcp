@@ -1,0 +1,149 @@
+[
+  {
+    "task": "I've read a .env file into a string and I need the settings out of it as key/value pairs",
+    "jobs": [
+      "parse"
+    ],
+    "domains": [
+      "text",
+      "data"
+    ],
+    "query": "parse dotenv / .env style config text into key-value pairs dict, handling KEY=VALUE lines, comments, quotes",
+    "gold": "parse_key_values"
+  },
+  {
+    "task": "pull the python snippets out of this README so I can lint them",
+    "jobs": [
+      "parse"
+    ],
+    "domains": [
+      "text",
+      "ast"
+    ],
+    "query": "extract fenced code blocks from markdown document, return python snippets with language tag",
+    "gold": "extract_code_blocks"
+  },
+  {
+    "task": "the config says the timeout is \"90m\" and I need that as a number I can compare",
+    "jobs": [
+      "parse",
+      "transform"
+    ],
+    "domains": [
+      "time",
+      "text"
+    ],
+    "query": "parse duration string like \"90m\" / \"1h30m\" into a numeric value (seconds or milliseconds) for comparison",
+    "gold": "parse_duration"
+  },
+  {
+    "task": "bucket these log records by which service emitted them",
+    "jobs": [
+      "transform"
+    ],
+    "domains": [
+      "data",
+      "text"
+    ],
+    "query": "group a list of records into buckets keyed by a field value, e.g. group log entries by service name",
+    "gold": "group_by"
+  },
+  {
+    "task": "what is the median and spread of these response times",
+    "jobs": [
+      "transform",
+      "inspect"
+    ],
+    "domains": [
+      "data"
+    ],
+    "query": "summary statistics over a numeric column: median, percentiles, standard deviation, min/max spread of response time values",
+    "gold": "summarize_numeric"
+  },
+  {
+    "task": "work out which users were added, removed or edited between yesterday and today",
+    "jobs": [
+      "transform",
+      "inspect"
+    ],
+    "domains": [
+      "data"
+    ],
+    "query": "diff two collections of records by key to find added, removed, and changed entries between two snapshots",
+    "gold": "diff_records"
+  },
+  {
+    "task": "find all the test files under this directory but skip build output and caches",
+    "jobs": [
+      "acquire",
+      "inspect"
+    ],
+    "domains": [
+      "fs"
+    ],
+    "query": "recursively find/list files matching a glob or name pattern under a directory, excluding build output, caches, and ignored directories",
+    "gold": "find_files"
+  },
+  {
+    "task": "what functions and classes are defined at the top level of this python module",
+    "jobs": [
+      "parse",
+      "inspect"
+    ],
+    "domains": [
+      "ast",
+      "fs"
+    ],
+    "query": "parse a Python source file and list its top-level function and class definitions with names and signatures",
+    "gold": "python_symbols"
+  },
+  {
+    "task": "show these results as a table in a markdown report",
+    "jobs": [
+      "present",
+      "generate"
+    ],
+    "domains": [
+      "text",
+      "data"
+    ],
+    "query": "render rows of records as a markdown table with aligned columns and headers for a report",
+    "gold": "to_markdown_table"
+  },
+  {
+    "task": "save these records to disk as jsonl without risking a half-written file",
+    "jobs": [
+      "mutate",
+      "present"
+    ],
+    "domains": [
+      "fs",
+      "data"
+    ],
+    "query": "atomically write records to a jsonl file, serializing one JSON object per line via temp file and rename to avoid partial writes",
+    "gold": "write_jsonl"
+  },
+  {
+    "task": "this network call fails intermittently, I want it to try again a few times",
+    "jobs": [
+      "orchestrate",
+      "acquire"
+    ],
+    "domains": [
+      "http"
+    ],
+    "query": "retry a flaky HTTP request with backoff, repeat failed network call a few times until it succeeds",
+    "gold": "retry_call"
+  },
+  {
+    "task": "how many lines and words are in this document",
+    "jobs": [
+      "inspect"
+    ],
+    "domains": [
+      "text"
+    ],
+    "query": "count lines, words, and characters in a text document",
+    "gold": "text_stats"
+  }
+]

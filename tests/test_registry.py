@@ -113,7 +113,7 @@ class TestLoading(RegistryCase):
 class TestQuarantine(RegistryCase):
     def test_source_change_since_capture_quarantines(self):
         path = write(self.helpers, "shout", GOOD)
-        registry.write_sidecar(path, [{"code": "shout('hi')", "output": "'HI'", "ok": True}])
+        registry.write_sidecar(path, [{"code": "shout('hi')", "output": "'HI'", "ok": True}], helper="shout")
         self.assertFalse(self.load().get("shout").quarantined)
 
         path.write_text(path.read_text().replace("text.upper()", "text.lower()"))
@@ -144,7 +144,7 @@ class TestQuarantine(RegistryCase):
 
     def test_captured_output_reaches_the_card(self):
         path = write(self.helpers, "shout", GOOD)
-        registry.write_sidecar(path, [{"code": "shout('hi')", "output": "'HI'", "ok": True}])
+        registry.write_sidecar(path, [{"code": "shout('hi')", "output": "'HI'", "ok": True}], helper="shout")
         self.assertIn("'HI'", self.load().get("shout").card.render())
 
 
@@ -237,8 +237,100 @@ class TestContractExecution(RegistryCase):
         self.assertTrue(contract.compare(captured, fresh))
         self.assertFalse(contract.compare(captured, captured))
 
+    def test_compare_ignores_volatile_output(self):
+        # An example touching a temp file would otherwise report drift on every
+        # single run, and a check that always fires is one nobody reads.
+        captured = [{"code": "f()", "output": "opened /tmp/tmpAAAA/demo.jsonl at 0x7f0011223344"}]
+        fresh = [{"code": "f()", "output": "opened /tmp/tmpZZZZ/demo.jsonl at 0x7f0099887766"}]
+        self.assertEqual(contract.compare(captured, fresh), [])
+
+    def test_compare_pairs_by_position_not_by_code(self):
+        # Two examples may legitimately share code with different setup.
+        captured = [{"code": "f()", "output": "one"}, {"code": "f()", "output": "two"}]
+        self.assertEqual(contract.compare(captured, captured), [])
+        changed = [{"code": "f()", "output": "one"}, {"code": "f()", "output": "CHANGED"}]
+        self.assertEqual(len(contract.compare(captured, changed)), 1)
+
+    def test_runtime_syntax_error_example_runs_only_once(self):
+        # Deciding eval-vs-exec by catching SyntaxError from the *run* would
+        # execute the example twice, doubling any side effect it had.
+        path = write(self.helpers, "shout", GOOD)
+        (result,) = contract.run_examples(
+            path,
+            [{
+                "setup": "_seen = []",
+                "code": "_seen.append(1) or compile('def (:', '<x>', 'exec')",
+                "raises": True,
+            }],
+        )
+        self.assertTrue(result["ok"], result["output"])
+        (count,) = contract.run_examples(
+            path,
+            [{
+                "setup": "_seen = []\ntry:\n    _seen.append(1)\n    compile('def (:', '<x>', 'exec')\nexcept SyntaxError:\n    pass",
+                "code": "len(_seen)",
+            }],
+        )
+        self.assertEqual(count["output"], "1")
+
+
+TWO = '''
+"""Two helpers, one file."""
+from __future__ import annotations
+from codeact import helper
+
+@helper(job="transform", domains=["data"], examples=[{"code": "up('a')"}])
+def up(text: str) -> str:
+    """Uppercase a string for emphasis in output.
+
+    Use when: rendering a heading.
+    Don't use when: it is already uppercase.
+    Args:
+        text: any string
+    Returns:
+        the same string in upper case
+    """
+    return text.upper()
+
+@helper(job="transform", domains=["data"], examples=[{"code": "down('A')"}])
+def down(text: str) -> str:
+    """Lowercase a string for case-insensitive comparison.
+
+    Use when: normalising before a comparison.
+    Don't use when: it is already lowercase.
+    Args:
+        text: any string
+    Returns:
+        the same string in lower case
+    """
+    return text.lower()
+'''
+
 
 class TestSidecar(RegistryCase):
+    def test_two_helpers_in_one_file_keep_separate_captures(self):
+        # A flat per-file list would let the second capture erase the first.
+        path = write(self.helpers, "pair", TWO)
+        registry.write_sidecar(path, [{"code": "up('a')", "output": "'A'"}], helper="up")
+        registry.write_sidecar(path, [{"code": "down('A')", "output": "'a'"}], helper="down")
+        reg = self.load()
+        self.assertIn("'A'", reg.get("up").card.render())
+        self.assertIn("'a'", reg.get("down").card.render())
+
+    def test_duplicate_helper_names_are_reported(self):
+        write(self.helpers, "one", GOOD)
+        write(self.helpers, "two", GOOD)
+        self.assertTrue(any("duplicate" in e for e in self.load().errors))
+
+    def test_legacy_flat_sidecar_still_read(self):
+        import json as _json
+        path = write(self.helpers, "shout", GOOD)
+        path.with_suffix(".json").write_text(_json.dumps({
+            "captured": [{"code": "shout('hi')", "output": "'HI'"}],
+            "source_hash": registry.source_hash(path.read_text()),
+        }))
+        self.assertIn("'HI'", self.load().get("shout").card.render())
+
     def test_sidecar_records_the_hash_it_was_captured_from(self):
         path = write(self.helpers, "shout", GOOD)
         registry.write_sidecar(path, [])

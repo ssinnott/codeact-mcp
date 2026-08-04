@@ -1,0 +1,37 @@
+{
+  "helpers": {
+    "retry_call": [
+      {
+        "code": "retry_call(lambda: 2 + 2)",
+        "note": "fn takes no arguments; bind them with a lambda or functools.partial. A first-attempt success never sleeps",
+        "output": "4",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_flaky, attempts=5, delay=0.001)",
+        "note": "_flaky raises on its first two calls then succeeds: the two failures are swallowed and the third call's value comes back",
+        "output": "'ready after 3 calls'",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_always, attempts=3, delay=0.001)",
+        "note": "_always raises every call and counts them. Attempts exhausted: the last exception is re-raised unchanged, and 'call 3' shows all three attempts really happened",
+        "output": "RuntimeError: still broken, call 3",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_always, attempts=5, delay=0.001, retry_on=(KeyError,))",
+        "note": "RuntimeError is not in retry_on, so it propagates immediately \u2014 'call 1' proves no retry was attempted",
+        "output": "RuntimeError: still broken, call 1",
+        "ok": true
+      },
+      {
+        "code": "retry_call(lambda: 1 / 0, attempts=0)",
+        "note": "attempts must be at least 1",
+        "output": "ValueError: attempts must be at least 1, got 0",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "4c1658f82e93aed1"
+}

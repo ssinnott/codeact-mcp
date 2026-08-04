@@ -1,35 +1,37 @@
 {
-  "captured": [
-    {
-      "code": "parse_duration('2h30m')",
-      "note": "components sum: 2*3600 + 30*60",
-      "output": "9000.0",
-      "ok": true
-    },
-    {
-      "code": "parse_duration('1d 12h')",
-      "note": "spaces are allowed; a day is exactly 86400 seconds",
-      "output": "129600.0",
-      "ok": true
-    },
-    {
-      "code": "parse_duration('1.5h')",
-      "note": "fractional amounts are fine",
-      "output": "5400.0",
-      "ok": true
-    },
-    {
-      "code": "parse_duration('90')",
-      "note": "a bare number is rejected \u2014 the unit is never assumed, write '90s'",
-      "output": "ValueError: cannot parse duration '90': expected <number><unit> at '90' (units: w, d, h, m, s)",
-      "ok": true
-    },
-    {
-      "code": "parse_duration('500ms')",
-      "note": "milliseconds are not a supported unit; 'm' consumes 500 minutes, then 's' has no number",
-      "output": "ValueError: cannot parse duration '500ms': expected <number><unit> at 's' (units: w, d, h, m, s)",
-      "ok": true
-    }
-  ],
+  "helpers": {
+    "parse_duration": [
+      {
+        "code": "parse_duration('2h30m')",
+        "note": "components sum: 2*3600 + 30*60",
+        "output": "9000.0",
+        "ok": true
+      },
+      {
+        "code": "parse_duration('1d 12h')",
+        "note": "spaces are allowed; a day is exactly 86400 seconds",
+        "output": "129600.0",
+        "ok": true
+      },
+      {
+        "code": "parse_duration('1.5h')",
+        "note": "fractional amounts are fine",
+        "output": "5400.0",
+        "ok": true
+      },
+      {
+        "code": "parse_duration('90')",
+        "note": "a bare number is rejected \u2014 the unit is never assumed, write '90s'",
+        "output": "ValueError: cannot parse duration '90': expected <number><unit> at '90' (units: w, d, h, m, s)",
+        "ok": true
+      },
+      {
+        "code": "parse_duration('500ms')",
+        "note": "milliseconds are not a supported unit; 'm' consumes 500 minutes, then 's' has no number",
+        "output": "ValueError: cannot parse duration '500ms': expected <number><unit> at 's' (units: w, d, h, m, s)",
+        "ok": true
+      }
+    ]
+  },
   "source_hash": "57b365cfa705b1bf"
 }

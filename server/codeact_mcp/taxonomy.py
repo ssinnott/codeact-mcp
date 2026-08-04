@@ -45,6 +45,10 @@ SIDE_EFFECTS: dict[str, str] = {
     "filesystem": "reads or writes the filesystem",
     "network": "makes network calls",
     "process": "spawns processes",
+    # An orchestrate helper that invokes a caller-supplied callable does whatever
+    # that callable does. Declaring "none" would be a lie in the one place the
+    # declaration is load-bearing, so it gets an honest value of its own.
+    "inherits": "whatever the callable it is given does",
 }
 
 # Which side effects each job may plausibly declare. A `parse` helper that opens
@@ -54,6 +58,8 @@ _ALLOWED_EFFECTS: dict[str, frozenset[str]] = {
     "acquire": frozenset({"filesystem", "network", "process"}),
     "mutate": frozenset({"filesystem", "network", "process"}),
     "orchestrate": frozenset(SIDE_EFFECTS),
+    # "inherits" belongs to orchestrate alone — anywhere else it would be a way
+    # to avoid declaring anything.
     # Pure jobs may read the filesystem (parsing a file is still parsing) but
     # must not reach the network or spawn processes.
     "parse": frozenset({"none", "filesystem"}),

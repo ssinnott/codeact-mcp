@@ -72,12 +72,21 @@ def search(
 ) -> list[Entry]:
     """Filter by category, then rank. Category filters are hard, ranking is soft."""
     pool = list(entries)
+
+    # Job is a hard filter: eight coarse categories, and a task's job is
+    # something the model gets right.
     if jobs:
         wanted = {j.lower() for j in jobs}
         pool = [e for e in pool if e.card.meta.job in wanted]
-    if domains:
-        wanted_d = {d.lower() for d in domains}
-        pool = [e for e in pool if wanted_d & set(e.card.meta.domains)]
+
+    # Domain is deliberately NOT a filter. Cross-cutting helpers have no honest
+    # domain — `retry_call` wraps any callable, so it is tagged `time` for its
+    # backoff, and a perfectly reasonable "retry this network call" search with
+    # domains=[http] would exclude the one right answer. Since the job filter has
+    # already cut the pool to roughly an eighth, domain is worth more as a
+    # ranking signal than as another gate.
+    wanted_d = {d.lower() for d in domains} if domains else set()
+
     if not pool:
         return []
 
@@ -89,6 +98,12 @@ def search(
     for entry in pool:
         score = scores.get(entry.name, 0.0)
         stats = usage.get(entry.name, {})
+
+        if wanted_d:
+            overlap = len(wanted_d & set(entry.card.meta.domains))
+            # Large enough to dominate ordering when it matches, small enough
+            # that a strong lexical match still surfaces without it.
+            score += 2.0 * min(overlap, 2)
 
         # Telemetry priors. Small next to lexical match — they break ties and
         # push known-good helpers up, they don't override relevance.

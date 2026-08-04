@@ -30,8 +30,9 @@ def _cell(value: Any, missing: str) -> str:
                 "]"
             ),
             "code": "print(to_markdown_table(_rows))",
-            "note": "columns are the union of keys in first-seen order; 'id' and "
-            "'name' come from the first record, 'role' is appended by the second",
+            "note": "_rows is two records, the second carrying an extra 'role' key. "
+            "Columns are the union of keys in first-seen order, so 'id' and 'name' "
+            "come from the first record and 'role' is appended by the second",
         },
         {
             "code": "print(to_markdown_table(_rows, columns=['name', 'id']))",

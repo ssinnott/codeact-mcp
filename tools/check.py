@@ -42,7 +42,7 @@ def check(entry, capture: bool) -> bool:
         print(f"             {first[-1] if first else '(no output)'}")
 
     if ok and capture:
-        registry.write_sidecar(entry.path, results)
+        registry.write_sidecar(entry.path, results, helper=entry.name)
         print(f"    captured {len(results)} example output(s) -> {entry.path.stem}.json")
     return ok
 
