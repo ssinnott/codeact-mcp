@@ -49,6 +49,7 @@ codeact-mcp/                        # this repo = the plugin
     ├── interpreter.py    # session manager, timeouts, restarts
     ├── worker.py         # the actual exec sandbox subprocess
     ├── registry.py       # helper storage, load, preload into namespace
+    ├── cards.py          # compile + validate usage contracts, run contract tests
     ├── validate.py       # the proposal gate
     └── telemetry.py      # usage counts, repeat-pattern detection
 ```
@@ -57,7 +58,7 @@ Helpers do **not** live in this repo. They accumulate in the *consuming* project
 
 ```
 <user project>/.codeact/
-├── helpers/<name>.py        # one file per helper — reviewable, diffable, git-tracked
+├── helpers/<name>.py        # code + its card, one file — reviewable, diffable, tracked
 ├── proposals/<id>.json      # pending, awaiting human approval
 └── telemetry.jsonl          # usage + outcomes (gitignored)
 ```
@@ -79,15 +80,14 @@ Deliberately small — every tool costs context in every session.
   is what lets the agent keep track of state without printing it.
 - `search_helpers(task?, jobs?, domains?)` → a ranked slice of the index, one line per
   helper: `name(sig) — summary [job/domains]`. The front door, and deliberately the same
-  ergonomics as discovering MCP tools. See §6 for how the slice is chosen.
-- `read_helper(name)` → full source, purpose, examples. Progressive disclosure: the
-  index is cheap, bodies are pulled only when needed.
-- `propose_helper(name, source, purpose, tags, side_effects, examples)` → runs the
+  ergonomics as discovering MCP tools. See §7 for how the slice is chosen.
+- `describe_helper(name)` → the **card**: the usage contract, *not* the source. See §5.
+- `propose_helper(name, source, card, job, domains, side_effects)` → runs the
   validation gate, writes a **pending** proposal. Installs nothing.
 
 **Secondary (2):** `session_state()`, `restart_session()`.
 
-**Not agent tools at all:** approve / reject. Those are human surfaces (§5).
+**Not agent tools at all:** approve / reject. Those are human surfaces (§6).
 
 Inside the interpreter the same discovery exists as plain Python — `helpers.search(...)`,
 `help(fn)` — so code-driven discovery works without leaving the code channel.
@@ -107,13 +107,75 @@ Inside the interpreter the same discovery exists as plain Python — `helpers.se
   slice — truncation should never lose data, only defer it.
 - Resource limits: `RLIMIT_AS`, `RLIMIT_CPU`, no fork bombs.
 
-What the agent is *allowed* to call inside that interpreter is the subject of §8.
+What the agent is *allowed* to call inside that interpreter is the subject of §9.
 
 ---
 
-## 5. The accumulation loop
+## 5. What a helper is: the card, not the code
 
-This is the part worth iterating on most.
+**The agent never reads a helper's source.** It reads a **card** — the usage contract.
+This is the same relationship it has with an MCP tool: you don't read a tool's
+implementation to call it correctly, you read its schema and description. A helper that
+needs its source read to be used correctly is a helper with a bad card, and that's a
+defect to fix at approval time rather than a gap for the agent to paper over at call time.
+
+Three things fall out of this, and the second is the one that matters:
+
+1. **Context economy.** A helper's body might be eighty lines; its contract is a dozen.
+   Across a library of two hundred, that's the difference between a browsable catalog and
+   an unusable one.
+2. **It forces the documentation to be good.** When source is available, docstrings rot,
+   because any ambiguity can be resolved by reading the code. Remove that fallback and the
+   card becomes load-bearing — an incomplete contract is now a bug that blocks approval.
+   Hiding the source is what gives the gate its teeth.
+3. **Real encapsulation.** Internals can be rewritten freely without invalidating anything
+   the agent believes, because the agent never believed anything about the internals.
+
+### What a card contains
+
+Roughly a well-written tool schema, and validated like one:
+
+- `name(params) -> return` with full type annotations
+- a one-line summary, plus **when to use it and when not to** — the "not" half is what
+  tool descriptions usually omit and what most often causes misuse. *"For a single file
+  prefer `read_one`; this one pays a directory scan."*
+- **per parameter**: meaning, constraints, units, defaults, and what a valid value
+  actually looks like
+- **return shape**, not just type. `list[dict]` tells the agent nothing; `list of
+  {sha, author, date}` tells it everything.
+- **failure modes**: which exceptions, under what conditions, and what to do about each
+- preconditions — needs auth, needs a git repo, needs the file to exist
+- declared capabilities (§9) and cost hints, if it's slow or hits the network
+- **one to three worked examples with real inputs and real outputs**
+
+The examples are the interesting part, because they're **executed at approval time and
+their actual output is captured into the card**. The documented output is therefore ground
+truth rather than the author's guess — which kills hallucinated examples, the most
+damaging possible defect in a document the agent trusts and cannot verify.
+
+Those same examples then serve as the helper's **contract tests**. Re-run them on load
+(or in CI); if the output no longer matches, the card is stale and the helper is
+quarantined from the catalog until a human resolves it. The library self-heals instead of
+silently accumulating rot.
+
+The card lives *in* the helper file as structured metadata plus a rich docstring, and the
+registry compiles the catalog from it. One source of truth, so the card and the code can't
+drift apart.
+
+### The one escape hatch
+
+Source access exists, but through a separate narrow door — `helper_source(name)` — and
+only for the revision workflow: the agent proposing a change to an existing helper does
+legitimately need to see it. It is not part of the discovery path.
+
+Debugging deliberately does *not* qualify. If a helper fails in a way its card didn't
+predict, the correct outcome is a flagged helper and a human fix, not an agent reverse
+engineering the body and routing around the damage. Telemetry already tracks failure
+rates (§10); an unexplained failure should feed that, not be silently absorbed.
+
+---
+
+## 6. The accumulation loop
 
 **Propose.** The skill gives the agent a crisp rule, because otherwise it will spam
 proposals: propose only when the same non-trivial pattern has been written **at least
@@ -128,15 +190,18 @@ volunteers "you've written this three times — consider proposing it."
 
 - name is a valid identifier, doesn't shadow an existing helper or builtin
 - it parses, has type hints on params and return
-- it has a docstring with a real *purpose* — what it's for and when to reach for it,
-  not a restatement of the signature
+- **the card is complete** (§5): every parameter documented, return *shape* described,
+  failure modes enumerated, and a when-not-to-use clause present. Since the agent will
+  never see the source, an incomplete card is not a style nit — it's the whole interface
+  missing, and this is the strictest check in the gate
 - it declares `side_effects` (`none` / `filesystem` / `network` / `process`) and the
   declaration matches a static scan of the source; a mismatch is an outright rejection,
   and anything non-`none` raises the approval's severity
-- it declares exactly one `job` and one to three `domains` from the vocabularies in §6,
+- it declares exactly one `job` and one to three `domains` from the vocabularies in §7,
   and the job is consistent with the declared side effects (a `parse` helper that opens
   a socket is misfiled, and that's worth catching before a human reads it)
-- it ships at least one runnable example, executed in a scratch session as a smoke test
+- its examples run in a scratch session, and their **real output is captured back into
+  the card** — documented behaviour is observed, never asserted
 - it isn't a near-duplicate of an existing helper (cheap similarity check → "this looks
   like `X`, extend that instead")
 
@@ -159,7 +224,7 @@ promotion; a permanent helper that keeps raising exceptions gets flagged for rev
 
 ---
 
-## 6. Discovery: categorize by job, retrieve by task
+## 7. Discovery: categorize by job, retrieve by task
 
 **Settled:** helpers are *not* registered as individual MCP tools. That would burn
 context linearly in library size — fighting the point of accumulating many helpers — and
@@ -186,7 +251,7 @@ closed vocabulary:
 Closed on purpose. Free-form tag sets rot within a few dozen entries; adding a new job
 category is itself an approval-gated event.
 
-Worth noticing that the job axis and the `side_effects` classification from §5 largely
+Worth noticing that the job axis and the `side_effects` classification from §6 largely
 agree — `acquire` and `mutate` are precisely the categories that touch the world. The
 categorization does double duty as safety metadata, and a proposal whose declared job and
 declared side effects disagree is a signal the author misunderstood their own function.
@@ -207,7 +272,7 @@ never inferred on read.
 |---|---|---|
 | always in context | ~150 tokens | the **job index** only: categories, one-line definitions, counts — `acquire (12) · parse (8) · transform (15) …` |
 | once per task | ~500–800 tokens | signatures + summaries for the slice matching this task |
-| per use | full body | `read_helper` on the one or two it will actually call |
+| per use | the **card** (§5) | `describe_helper` on the one or two it will actually call — contract, never source |
 
 Tier 1 means the agent always knows the *shape* of the library without spending a call —
 it knows there are twelve ways to acquire things before it knows what any of them are.
@@ -222,7 +287,7 @@ this session.
 
 So the flow at task start is: agent classifies the task from the job index it already
 has, calls `search_helpers(task="…", jobs=[…], domains=[…])`, gets a small ranked slice,
-pulls full source for the one it wants, and writes code.
+pulls the card for the one it wants, and writes code against the contract.
 
 I'd ship lexical matching plus model-chosen categories first and only reach for
 embeddings if recall measurably disappoints. Sliced by job and domain, the candidate pool
@@ -233,17 +298,26 @@ human can `@`-mention one directly, and **in-interpreter** discovery (`helpers.b
 `help()`, real docstrings on the preloaded functions) so code-driven lookup works without
 leaving the code channel.
 
-### Does the taxonomy actually work?
+### Does any of this actually work?
 
-Categorization schemes are easy to design and hard to validate, so this needs a number
-attached to it early. Alongside phase 2: seed the library, write tasks where a specific
-helper is the right answer, and measure how often the agent finds and uses it rather than
-rewriting the thing from scratch. That hit rate is what tells us whether the job axis is
-carrying its weight or whether we're building a filing cabinet nobody opens.
+Categorization schemes are easy to design and hard to validate, so this needs numbers
+attached early. Two evals, both cheap, both alongside phase 2.
+
+**Retrieval hit rate.** Seed the library, write tasks where a specific helper is the right
+answer, and measure how often the agent finds and uses it rather than rewriting the thing
+from scratch. That tells us whether the job axis is carrying its weight or whether we're
+building a filing cabinet nobody opens.
+
+**Card sufficiency.** Because the card is now the entire interface, it can be tested
+directly: give a fresh agent the card *alone* — no source, no context from the session
+that produced it — and have it use the helper. If it can't, the card is inadequate and the
+helper goes back for revision. This is a rare case where the safety property and the eval
+are the same mechanism, and it gives approval reviewers an objective standard to apply
+instead of a vibe.
 
 ---
 
-## 7. Encouraging Python-first
+## 8. Encouraging Python-first
 
 - **Skill** (`codeact`): triggers on multi-step / data / file / API work. Teaches the
   loop — *check helpers → write Python → read the delta → iterate → propose*. Getting
@@ -257,7 +331,7 @@ carrying its weight or whether we're building a filing cabinet nobody opens.
 
 ---
 
-## 8. The interpreter guard
+## 9. The interpreter guard
 
 **Decided:** the agent *authors* helpers rather than only extracting previously-executed
 code, and the guard is what makes that safe. Authoring is where the value is — the agent
@@ -323,8 +397,8 @@ write to `.codeact/` itself. The agent must not be able to edit the guard, the a
 helpers, or the proposal queue — that's the one privilege escalation that breaks the
 entire model.
 
-Note that tier 2 is *exactly* the `side_effects` vocabulary from §5, which is *exactly*
-the `acquire`/`mutate` split from §6. Side-effect declaration, job classification, and
+Note that tier 2 is *exactly* the `side_effects` vocabulary from §6, which is *exactly*
+the `acquire`/`mutate` split from §7. Side-effect declaration, job classification, and
 capability grant are three views of the same metadata. That's not a coincidence worth
 engineering around — it's a sign the model is coherent, and the implementation should use
 one enum for all three.
@@ -375,12 +449,12 @@ round trips to fix.
 
 ---
 
-## 9. Suggested build order
+## 10. Suggested build order
 
 | Phase | Ships | Why here |
 |---|---|---|
 | 1 | interpreter + `run_python` + skill, guard in **audit mode** from day one | useful on its own; audit logging starts collecting the data that sets the tier boundaries |
-| 2 | registry, job/domain taxonomy, `search_helpers`, `read_helper`, preloading, seed helpers, **discovery eval** | proves the retrieval ergonomics against static content, before any of it is load-bearing |
+| 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
 | 3 | `propose_helper`, validation gate, approval surfaces, **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, dependency install | the real boundary, once the policy layer has proven its tiers |
 | 5 | telemetry, repeat detection, ranking priors, promote/demote, user scope | makes accumulation self-sustaining |
@@ -393,7 +467,7 @@ escalation path has to exist before the blocking does.
 
 ---
 
-## 10. Open questions
+## 11. Open questions
 
 1. **Approval friction.** Both surfaces exist (inline elicitation vs batched
    `/codeact:review`) — which is the default, and does inline approval interrupt the
@@ -403,14 +477,18 @@ escalation path has to exist before the blocking does.
 3. **Helper granularity.** One file per helper is maximally reviewable but awkward for
    helpers that want to share private state. Allow modules of related helpers?
 4. **Where exactly do the tier boundaries fall?** Settled that the agent authors freely
-   under sign-off (§8), but tier 0's stdlib list and the tier 1/2 line are guesses until
+   under sign-off (§9), but tier 0's stdlib list and the tier 1/2 line are guesses until
    audit mode produces real data. Specifically unresolved: is `subprocess` tier 2 when
    `Bash` is already granted at the Claude Code level, and does read access really extend
    to the whole project root or only to tracked files?
 5. **Is the eight-job vocabulary right?** It's a guess, and the honest way to find out is
    to categorize thirty real helpers by hand and see which ones resist classification or
    land in `orchestrate` because nothing else fit.
-6. **Should compositions accumulate too?** Individual helpers are the unit now, but the
+6. **How does revision actually work?** Source is visible only for the revise-an-existing-
+   helper path (§5), but the flow isn't designed: does a revision re-run the full gate,
+   does it need re-approval when only the card changed, and what happens to a helper whose
+   contract tests fail while a revision is pending?
+7. **Should compositions accumulate too?** Individual helpers are the unit now, but the
    recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
    then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
    and probably a phase 5+ question rather than something to design in now.
