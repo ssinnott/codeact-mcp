@@ -107,9 +107,7 @@ Inside the interpreter the same discovery exists as plain Python — `helpers.se
   slice — truncation should never lose data, only defer it.
 - Resource limits: `RLIMIT_AS`, `RLIMIT_CPU`, no fork bombs.
 
-Sandboxing is tiered, and I'd be honest in the README about which tier is on:
-0 = same user, same machine (equivalent to what Bash already grants — the default);
-1 = subprocess + rlimits + pinned cwd; 2 = container / `uv` venv with a network toggle.
+What the agent is *allowed* to call inside that interpreter is the subject of §8.
 
 ---
 
@@ -259,23 +257,143 @@ carrying its weight or whether we're building a filing cabinet nobody opens.
 
 ---
 
-## 8. Suggested build order
+## 8. The interpreter guard
 
-| Phase | Ships | Why here |
-|---|---|---|
-| 1 | interpreter + `run_python` + skill | useful on its own, before any helper machinery |
-| 2 | registry, job/domain taxonomy, `search_helpers`, `read_helper`, preloading, seed helpers, **discovery eval** | proves the retrieval ergonomics against static content, before any of it is load-bearing |
-| 3 | `propose_helper`, validation gate, approval surfaces | the actual twist |
-| 4 | telemetry, repeat detection, ranking priors, promote/demote | makes accumulation self-sustaining |
-| 5 | sandbox tiers, dependency install, user scope | hardening |
+**Decided:** the agent *authors* helpers rather than only extracting previously-executed
+code, and the guard is what makes that safe. Authoring is where the value is — the agent
+can write the function it wishes existed, generalize beyond the one case it just solved,
+and give it a real interface. Sign-off is what contains the risk.
 
-Phase 1 is a day. Phases 2–3 are where the design risk is — and phase 2 is worth doing
-with hand-written helpers precisely because it lets us measure whether task-driven
-discovery works before building the machinery that generates the content.
+### Two layers, and not confusing them
+
+This is the one part of the design where a mistake is expensive, so it's worth being
+blunt: **you cannot securely sandbox Python in-process.** The language's dynamic nature
+means restriction is a losing game — attribute traversal (`().__class__.__bases__`),
+`__globals__` on any function object, deserialization, dynamic import — and new escape
+routes surface regularly. RestrictedPython, the most mature tool in this space, says so
+itself in its own README: it "is not a sandbox system or a secured environment," it
+helps *define a trusted environment*. That framing is exactly right and worth stealing.
+
+So the guard is two layers with two different jobs:
+
+**Layer 1 — the policy layer (AST analysis).** Static walk of every block before it
+executes. This is where "non-approved functions don't run" lives. Its job is *intent and
+review*: catch unreviewed capability use, explain it well, and route it into the approval
+flow. It is defeatable by sufficiently dynamic code, and that is acceptable, because it
+is not the security boundary.
+
+**Layer 2 — the containment layer (OS-level).** The actual boundary. On Linux,
+**Landlock + seccomp-bpf** is the sweet spot for a local dev tool: roughly 6ms startup,
+near-native performance on the hot path, no Docker dependency, and it constrains
+filesystem and syscall access for real. Containers or gVisor if the server is ever hosted
+for someone else; microVMs if it's multi-tenant. WASM/Pyodide is a poor fit here despite
+being a genuine boundary — an agent's Python routinely wants native extensions and
+persistent state, which is exactly what that model gives up.
+
+Layer 1 decides what *should* run and asks a human when unsure. Layer 2 decides what
+*can* damage anything. Keep them separate in the code and in the docs, so nobody mistakes
+a policy check for a security guarantee.
+
+### Capability tiers
+
+The tiering answers the "subset of the stdlib and basic syntax" problem directly.
+
+**Tier 0 — always available, no approval.** All language syntax: control flow,
+comprehensions, functions, classes, exceptions, f-strings. The agent writes whatever it
+wants here. Safe builtins (`len`, `sorted`, `enumerate`, `sum`, `isinstance`, `print`,
+the constructors, …) and the pure stdlib: `json`, `re`, `math`, `statistics`,
+`itertools`, `functools`, `collections`, `dataclasses`, `datetime`, `decimal`, `textwrap`,
+`difflib`, `hashlib`, `base64`, `uuid`, `enum`, `typing`, `csv`, `io`, `copy`, `heapq`,
+`bisect`, `ast`, `pprint`, `operator`. Plus every approved helper. This tier is
+deliberately generous — pure computation on data already in the namespace can't hurt
+anyone, and a stingy tier 0 produces an agent that flails against the guard instead of
+working.
+
+**Tier 1 — allowed, logged, no prompt.** Reading files under the project root. The
+argument for not gating this: Claude Code already grants `Read` and `Bash`, so blocking
+file reads in Python buys no security and costs a lot of friction.
+
+**Tier 2 — requires approval.** Network (`urllib`, `requests`, `httpx`, `socket`),
+process spawning (`subprocess`, `os.system`), writes outside the project root, `ctypes`,
+`pickle.load`, and dynamic execution (`eval`, `exec`, `compile`, `importlib`).
+
+**Tier 3 — refused outright**, absent an explicit config override: dunder traversal used
+for escape (`__class__`/`__bases__`/`__subclasses__`/`__globals__`/`__mro__`), and any
+write to `.codeact/` itself. The agent must not be able to edit the guard, the approved
+helpers, or the proposal queue — that's the one privilege escalation that breaks the
+entire model.
+
+Note that tier 2 is *exactly* the `side_effects` vocabulary from §5, which is *exactly*
+the `acquire`/`mutate` split from §6. Side-effect declaration, job classification, and
+capability grant are three views of the same metadata. That's not a coincidence worth
+engineering around — it's a sign the model is coherent, and the implementation should use
+one enum for all three.
+
+### The escalation path is the flywheel
+
+When code hits a blocked capability, the guard must not just throw. It returns a
+structured refusal naming the capability, the line, and the two ways forward:
+
+```
+BLOCKED  requests.get  →  capability `network` (tier 2), line 4
+  This session has no network grant.
+  → request_capability("network", reason=…, scope=session|once)   human prompt
+  → propose_helper(...)  package it as a reviewed helper, approved once, reusable forever
+```
+
+That second option is the interesting one, because it means **the guard is the primary
+driver of helper accumulation**. Rather than hoping the agent notices it has repeated
+itself, the friction of the capability boundary continuously channels privileged work
+into named, reviewed, reusable units. Every wall the agent hits is an invitation to
+propose something.
+
+It also resolves the authoring tension cleanly: the agent has total freedom exactly where
+freedom is safe (tier 0, pure computation) and needs a human exactly where it isn't.
+
+### Helpers run elevated
+
+The mechanic that makes this work: **an approved helper's body runs with the capabilities
+it declared at approval time**, even though agent-written code cannot use those
+capabilities directly. `fetch_pr_diff()` may use `requests` internally because a human
+read that code and approved it. Helpers are loaded from trusted files and are not subject
+to the layer-1 walk — they were *reviewed* instead of *analyzed*.
+
+So the helper library is a growing set of reviewed capability capsules, and the approval
+gate is the only bridge between the guarded and unguarded worlds.
+
+### Rollout: audit mode first
+
+The main risk here is false positives — a guard that blocks too much produces an agent
+that fights it. So ship the guard in **audit mode**: it walks, logs what it *would* have
+blocked, and blocks nothing. Run it against real sessions, tune tier 0 against what
+legitimate work actually touches, and only then turn enforcement on. The audit log is
+also the honest input to the tier boundaries above, which are currently my guesses.
+
+One UX detail that matters more than it sounds: the guard should report **all** violations
+in a block at once, not the first. Otherwise a five-violation snippet costs five
+round trips to fix.
 
 ---
 
-## 9. Open questions
+## 9. Suggested build order
+
+| Phase | Ships | Why here |
+|---|---|---|
+| 1 | interpreter + `run_python` + skill, guard in **audit mode** from day one | useful on its own; audit logging starts collecting the data that sets the tier boundaries |
+| 2 | registry, job/domain taxonomy, `search_helpers`, `read_helper`, preloading, seed helpers, **discovery eval** | proves the retrieval ergonomics against static content, before any of it is load-bearing |
+| 3 | `propose_helper`, validation gate, approval surfaces, **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
+| 4 | layer 2 containment (Landlock + seccomp), capability grants, dependency install | the real boundary, once the policy layer has proven its tiers |
+| 5 | telemetry, repeat detection, ranking priors, promote/demote, user scope | makes accumulation self-sustaining |
+
+Phase 1 is a day. Phases 2–3 are where the design risk is. Two sequencing points worth
+keeping: phase 2 uses hand-written helpers so we can measure whether task-driven
+discovery works before building the machinery that generates the content, and guard
+enforcement waits for phase 3 because a wall with no door is just a broken tool — the
+escalation path has to exist before the blocking does.
+
+---
+
+## 10. Open questions
 
 1. **Approval friction.** Both surfaces exist (inline elicitation vs batched
    `/codeact:review`) — which is the default, and does inline approval interrupt the
@@ -284,9 +402,11 @@ discovery works before building the machinery that generates the content.
    has something to find on day one, or stay empty so everything is earned?
 3. **Helper granularity.** One file per helper is maximally reviewable but awkward for
    helpers that want to share private state. Allow modules of related helpers?
-4. **Does the agent write helpers, or extract them?** Proposing from *code it already
-   ran successfully* is much safer than proposing freshly written code. I lean toward
-   requiring the source to have been executed in-session first.
+4. **Where exactly do the tier boundaries fall?** Settled that the agent authors freely
+   under sign-off (§8), but tier 0's stdlib list and the tier 1/2 line are guesses until
+   audit mode produces real data. Specifically unresolved: is `subprocess` tier 2 when
+   `Bash` is already granted at the Claude Code level, and does read access really extend
+   to the whole project root or only to tracked files?
 5. **Is the eight-job vocabulary right?** It's a guess, and the honest way to find out is
    to categorize thirty real helpers by hand and see which ones resist classification or
    land in `orchestrate` because nothing else fit.
