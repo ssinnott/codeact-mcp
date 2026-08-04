@@ -794,9 +794,21 @@ from a single execution.
 |---|---|---|
 | 1 ✅ | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
 | 2 ✅ | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
-| 3 | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
-| 4 | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
-| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
+| 3 ✅ | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
+| 4 ✅ | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
+| 5 ✅ | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
+
+**All five phases are implemented.** One deliberate exception, recorded honestly
+rather than quietly: **layer-2 containment is not built.** The interpreter runs with
+your full user privileges, the same as `Bash` already grants. What exists is the policy
+layer (§9 layer 1), rlimits, and a scratch-directory-plus-no-credentials boundary for
+trial runs. Landlock and seccomp remain the right answer and remain undone, so the
+README says the guard is a policy layer and not a security boundary — because it is.
+
+Two other honest limits. Secrets are stored under filesystem permissions only; the
+standard library ships no cipher, and rolling one would read as protection while
+providing none. And the miner's synthesis step is manual: it surfaces ranked clusters
+for a human to act on rather than writing the helper itself.
 
 Phase 1 is a day. Phases 2–3 are where the design risk is. Four sequencing points worth
 keeping: phase 2 uses hand-written helpers so we can measure whether task-driven discovery
