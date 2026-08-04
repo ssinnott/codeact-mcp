@@ -3,17 +3,35 @@
     "read_jsonl": [
       {
         "code": "read_jsonl(str(_p))",
-        "note": "blank lines are skipped by default",
+        "note": "_p holds two records separated by a blank line; blank lines are skipped by default",
         "output": "[{'id': 1, 'ok': True}, {'id': 2, 'ok': False}]",
         "ok": true
       },
       {
         "code": "read_jsonl(str(_p), skip_blank=False)",
-        "note": "with skip_blank=False a blank line is treated as corruption",
-        "output": "json.decoder.JSONDecodeError: Expecting value (line 2 of /tmp/tmptl1o26w8/demo.jsonl): line 2 column 1 (char 1)",
+        "note": "same file, skip_blank=False: the blank line is now corruption, and JSONDecodeError names it",
+        "output": "json.decoder.JSONDecodeError: Expecting value (line 2 of /tmp/tmp4903c_t7/demo.jsonl): line 2 column 1 (char 1)",
+        "ok": true
+      },
+      {
+        "code": "read_jsonl(str(_empty))",
+        "note": "an empty file is not an error \u2014 it returns an empty list",
+        "output": "[]",
+        "ok": true
+      },
+      {
+        "code": "read_jsonl(str(_latin1))",
+        "note": "a non-UTF-8 file raises UnicodeDecodeError naming the path; re-encode it first",
+        "output": "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 13: invalid continuation byte (/tmp/tmp43kk1zz8/latin1.jsonl is not valid UTF-8)",
+        "ok": true
+      },
+      {
+        "code": "read_jsonl(_dir)",
+        "note": "a directory is not silently treated as empty \u2014 open() raises IsADirectoryError",
+        "output": "IsADirectoryError: [Errno 21] Is a directory: '/tmp/tmpc5q8wb2s'",
         "ok": true
       }
     ]
   },
-  "source_hash": "d3e6bb9a6cd86549"
+  "source_hash": "9e9b6ef1b1281b13"
 }

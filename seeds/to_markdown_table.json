@@ -20,18 +20,48 @@
         "ok": true
       },
       {
+        "code": "print(to_markdown_table(r for r in _rows if r['id'] == 2))",
+        "note": "a generator renders normally: records is materialised once up front, so a one-shot iterable is not spent collecting the columns",
+        "output": "| id  | name  | role         |\n| --- | ----- | ------------ |\n| 2   | grace | rear admiral |",
+        "ok": true
+      },
+      {
         "code": "print(to_markdown_table([{'cmd': 'grep x | wc -l', 'note': 'two\\nlines'}]))",
         "note": "pipes are escaped and newlines become <br>, so one record always stays on one row",
         "output": "| cmd             | note         |\n| --------------- | ------------ |\n| grep x \\| wc -l | two<br>lines |",
         "ok": true
       },
       {
+        "code": "print(to_markdown_table([{'name': '\u65e5\u672c\u8a9e', 'n': 1}, {'name': 'ada', 'n': 2}]))",
+        "note": "padding counts characters, not screen columns, so the wide CJK cell overflows its padding \u2014 the markup is still valid and renders aligned, only this raw text looks ragged",
+        "output": "| name | n   |\n| ---- | --- |\n| \u65e5\u672c\u8a9e  | 1   |\n| ada  | 2   |",
+        "ok": true
+      },
+      {
         "code": "to_markdown_table([])",
-        "note": "no records and no explicit columns means nothing to render",
+        "note": "no records and no columns= leaves no columns to resolve, so there is nothing to render",
         "output": "''",
+        "ok": true
+      },
+      {
+        "code": "to_markdown_table(_rows, columns=[])",
+        "note": "an empty resolved column list is the trigger, not empty input: _rows has two records and the result is still empty",
+        "output": "''",
+        "ok": true
+      },
+      {
+        "code": "to_markdown_table({'id': 1, 'name': 'ada'})",
+        "note": "a single record on its own is refused rather than iterated as its keys; wrap it in a list",
+        "output": "TypeError: records must be an iterable of record dicts, not a single dict; wrap one record in a list",
+        "ok": true
+      },
+      {
+        "code": "to_markdown_table(_rows, columns='name')",
+        "note": "a bare string would silently become one column per character, so it is refused; pass ['name']",
+        "output": "TypeError: columns must be a sequence of column names, not 'name'; pass a list such as ['name']",
         "ok": true
       }
     ]
   },
-  "source_hash": "e162c9b5f53d32f8"
+  "source_hash": "62b6f9f01fb8c853"
 }

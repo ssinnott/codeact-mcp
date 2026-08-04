@@ -2,24 +2,42 @@
   "helpers": {
     "parse_key_values": [
       {
-        "code": "parse_key_values(_env)",
-        "note": "comments, blanks and the `[section]` line are skipped; `export ` is dropped and quotes are removed",
-        "output": "{'DB_HOST': 'localhost', 'DB_PORT': '5432', 'GREETING': 'hello\\nworld', 'LITERAL': 'keep $this as-is', 'EMPTY': ''}",
+        "code": "parse_key_values('# database\\nexport DB_HOST=localhost\\nDB_PORT = 5432\\n\\n[section]\\nEMPTY=\\n')",
+        "note": "the comment, blank and `[section]` lines are skipped; `export ` is dropped; the spaces around `DB_PORT` are stripped off the key, so it is looked up as 'DB_PORT'; a bare `EMPTY=` gives ''",
+        "output": "{'DB_HOST': 'localhost', 'DB_PORT': '5432', 'EMPTY': ''}",
         "ok": true
       },
       {
-        "code": "parse_key_values('API_Key=abc\\nAPI_Key=xyz', lower_keys=True)",
-        "note": "keys folded to lowercase; a repeated key keeps the last value",
-        "output": "{'api_key': 'xyz'}",
+        "code": "parse_key_values('URL=https://h.test/p?a=1&b=2\\nTOKEN=aGVsbG8=\\n')",
+        "note": "the line is split on the FIRST `=` only, so every later `=` stays in the value: query strings and base64 padding survive intact",
+        "output": "{'URL': 'https://h.test/p?a=1&b=2', 'TOKEN': 'aGVsbG8='}",
         "ok": true
       },
       {
-        "code": "parse_key_values('A=pa#ss\\nB=pa #ss\\nC=\"pa #ss\"')",
-        "note": "in a bare value a `#` after whitespace starts a comment and is cut; quote the value to keep it",
-        "output": "{'A': 'pa#ss', 'B': 'pa', 'C': 'pa #ss'}",
+        "code": "parse_key_values('''DOUBLE=\"a\\\\tb\"\\nSINGLE='a\\\\tb'\\nHASH=pa#ss\\nBARE=a #b''')",
+        "note": "a double-quoted value has \\t and friends unescaped (a real tab here), a single-quoted one is literal, and in a bare value a `#` after whitespace starts a comment while `pa#ss` keeps its `#`",
+        "output": "{'DOUBLE': 'a\\tb', 'SINGLE': 'a\\\\tb', 'HASH': 'pa#ss', 'BARE': 'a'}",
+        "ok": true
+      },
+      {
+        "code": "parse_key_values('PORT=1\\nport=2\\nAPI_Key=abc', lower_keys=True)",
+        "note": "lower_keys folds casing, so PORT and port collide into one entry and the later line silently wins \u2014 no warning that two keys were merged",
+        "output": "{'port': '2', 'api_key': 'abc'}",
+        "ok": true
+      },
+      {
+        "code": "parse_key_values('\\ufeffDB_HOST=localhost')",
+        "note": "a leading UTF-8 BOM (usual in .env files written on Windows) is removed, so the first key is 'DB_HOST' and not '\\ufeffDB_HOST'",
+        "output": "{'DB_HOST': 'localhost'}",
+        "ok": true
+      },
+      {
+        "code": "parse_key_values(b'DB_HOST=localhost')",
+        "note": "anything that is not a str is refused up front, not half-parsed",
+        "output": "TypeError: text must be str, not bytes; decode or read the config yourself first (raw.decode('utf-8'), path.read_text())",
         "ok": true
       }
     ]
   },
-  "source_hash": "83aa6a192ae86a81"
+  "source_hash": "4532f7b577b6982d"
 }

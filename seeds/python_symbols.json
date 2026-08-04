@@ -3,7 +3,7 @@
     "python_symbols": [
       {
         "code": "python_symbols(str(_mod))",
-        "note": "the file defines load (line 6), a decorated save, an async fetch and class Store; save reports its 'def' line 13, not its @register line 12, and the nested _inner and the method put are absent because neither is top level",
+        "note": "the four direct children of the module body are load, the decorated save (reported at its 'def' line 13, not its @register line 12), the async fetch and class Store; _inner (nested), put (a method), win_only (inside an if) and Alias (an assignment, not a def) are all absent",
         "output": "[{'name': 'load', 'kind': 'function', 'line': 6, 'has_docstring': True}, {'name': 'save', 'kind': 'function', 'line': 13, 'has_docstring': False}, {'name': 'fetch', 'kind': 'async function', 'line': 16, 'has_docstring': True}, {'name': 'Store', 'kind': 'class', 'line': 20, 'has_docstring': True}]",
         "ok": true
       },
@@ -14,12 +14,36 @@
         "ok": true
       },
       {
+        "code": "python_symbols(str(_bom))",
+        "note": "a file saved with a UTF-8 BOM \u2014 as Notepad and several Windows editors do \u2014 is read fine: the BOM is stripped before parsing, so start is still found at line 1 and no SyntaxError is raised",
+        "output": "[{'name': 'start', 'kind': 'function', 'line': 1, 'has_docstring': True}]",
+        "ok": true
+      },
+      {
         "code": "python_symbols(str(_broken))",
-        "note": "unparsable source raises rather than returning a partial list",
-        "output": "File \"/tmp/tmpzcj2oz_q/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
+        "note": "genuinely unparsable source raises rather than returning a partial list",
+        "output": "File \"/tmp/tmppfzw3sos/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
+        "ok": true
+      },
+      {
+        "code": "python_symbols(str(_missing))",
+        "note": "a path with no file at it raises rather than returning an empty list",
+        "output": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmppfzw3sos/not_here.py'",
+        "ok": true
+      },
+      {
+        "code": "python_symbols(str(_dir))",
+        "note": "a directory is not a source file, so a wrong path is loud on POSIX",
+        "output": "IsADirectoryError: [Errno 21] Is a directory: '/tmp/tmppfzw3sos'",
+        "ok": true
+      },
+      {
+        "code": "python_symbols(str(_latin))",
+        "note": "bytes that are not UTF-8 (here latin-1) raise while decoding, before any parsing; a '# -*- coding: latin-1 -*-' line would not change that",
+        "output": "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 8: invalid continuation byte",
         "ok": true
       }
     ]
   },
-  "source_hash": "a64f5734e5bbc474"
+  "source_hash": "3a1a86d8f664b516"
 }

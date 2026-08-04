@@ -26,12 +26,18 @@
         "ok": true
       },
       {
+        "code": "_sleep_schedule(attempts=3, delay=0.1, backoff=2.0)",
+        "note": "the wait schedule of a run that exhausts its attempts: 3 calls but only 2 sleeps, 0.1s then 0.2s. Nothing is slept after the final failure \u2014 the helper raises the moment call 3 fails rather than pausing first",
+        "output": "{'waits': [0.1, 0.2], 'calls_made': 3}",
+        "ok": true
+      },
+      {
         "code": "retry_call(lambda: 1 / 0, attempts=0)",
-        "note": "attempts must be at least 1",
+        "note": "attempts below 1 is rejected rather than returning None from a callable that was never invoked; same for any negative value",
         "output": "ValueError: attempts must be at least 1, got 0",
         "ok": true
       }
     ]
   },
-  "source_hash": "4c1658f82e93aed1"
+  "source_hash": "ed84e204cb2ba295"
 }

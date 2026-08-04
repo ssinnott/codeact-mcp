@@ -105,7 +105,10 @@ def parse_docstring(doc: str | None) -> Prose:
             # indentation to tell a new entry from a wrapped line.
             target = prose.args if current == "args" else prose.raises
             for key, value in _split_items("\n".join(buffer)):
-                target[key] = value
+                # A helper can raise the same exception type for more than one
+                # reason. Overwriting would silently drop every condition but
+                # the last, in the section whose whole job is enumerating them.
+                target[key] = f"{target[key]} Also: {value}" if key in target else value
         elif "\n".join(buffer).strip():
             setattr(prose, current, " ".join("\n".join(buffer).split()))
 

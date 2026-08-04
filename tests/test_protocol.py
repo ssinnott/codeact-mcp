@@ -122,6 +122,12 @@ class TestProtocol(unittest.TestCase):
         out = self.c.tool("run_python", code="helpers.search('jsonl')")
         self.assertIn("read_jsonl", out)
 
+    def test_a_long_expression_result_is_not_cut_to_a_summary(self):
+        # The compact 120-char repr is right for the state delta and wrong for a
+        # value the agent explicitly evaluated.
+        out = self.c.tool("run_python", code="'-'.join(str(i) for i in range(300))")
+        self.assertIn("299", out)
+
     def test_preloaded_helpers_are_not_reported_as_session_state(self):
         # They are always there; listing them as fresh state would be noise.
         out = self.c.tool("run_python", code="x = 1")

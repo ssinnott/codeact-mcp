@@ -131,18 +131,21 @@ def diff_records(
             the position within it, so go fix or filter that record.
         ValueError: a key value repeats within one side. Deduplicate first, or
             pick a field that really is unique.
-        TypeError: one of three mistakes, each spelled out in the message.
-            `ignore` was given a bare string, which would compare against its
+        TypeError: an argument is the wrong shape; the message says which, and
+            for a record, where. `ignore` was given a bare string, which would
+            compare against its
             individual letters and leave the field you meant diffed anyway —
             pass ignore=["updated_at"], not ignore="updated_at". Or something
             iterated out of `before`/`after` is not a dict, which is what
-            passing a single record, or a dict keyed by id, amounts to; the
-            message names the side and position. Or a key value is unhashable, a
-            list say — join on a scalar field instead.
+            passing a single record, or a dict keyed by id, amounts to. Or a key
+            value is unhashable, a list say — join on a scalar field instead.
 
     Preconditions:
         Field values must support `==`. Comparison is by equality, so 1 and 1.0
-        count as unchanged, and two equal-but-distinct objects do too.
+        count as unchanged, and two equal-but-distinct objects do too. The sides
+        are paired by dict lookup on the key, so key values that hash and compare
+        equal — 1 and True, 2 and 2.0 — name the same record, and count as a
+        duplicate when they land on the same side.
     """
     if isinstance(ignore, (str, bytes)):
         raise TypeError(

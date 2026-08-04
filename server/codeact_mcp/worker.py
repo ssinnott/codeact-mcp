@@ -124,6 +124,7 @@ def execute(ns: dict, code: str) -> dict:
     stdout, stderr = io.StringIO(), io.StringIO()
     before = _snapshot(ns)
     result_repr = None
+    result_truncated = False
     error = None
 
     try:
@@ -145,7 +146,17 @@ def execute(ns: dict, code: str) -> dict:
                 value = eval(tail, ns)
                 if value is not None:
                     ns["_"] = value
-                    result_repr = _short(value)
+                    # The agent asked for this value explicitly, so it gets the
+                    # generous output budget rather than the compact one used
+                    # for the state delta — truncating a helpers.search() to
+                    # 120 characters throws away the answer.
+                    #
+                    # repr, per REPL convention, except for multi-line strings
+                    # where it would escape every newline into unreadable noise.
+                    multiline = isinstance(value, str) and "\n" in value
+                    result_repr, result_truncated = _truncate(
+                        value if multiline else repr(value)
+                    )
     except KeyboardInterrupt:
         error = "KeyboardInterrupt: execution exceeded its timeout (state preserved)"
     except SystemExit as exc:
@@ -162,13 +173,16 @@ def execute(ns: dict, code: str) -> dict:
         ns["_out"] = full
 
     shown_out, truncated = _truncate(out_text)
+    if result_truncated:
+        # Keep the untruncated value reachable, same as for stdout.
+        ns["_out"] = ns["_"] if isinstance(ns.get("_"), str) else repr(ns.get("_"))
     return {
         "stdout": shown_out,
         "stderr": _truncate(err_text)[0],
         "error": error,
         "delta": _delta(before, ns),
         "result": result_repr,
-        "truncated": truncated,
+        "truncated": truncated or result_truncated,
     }
 
 
