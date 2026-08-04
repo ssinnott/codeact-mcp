@@ -10,6 +10,47 @@ For anything with more than a couple of steps, write Python and run it with
 you loops, conditionals, error handling, and composition — a chain of individual
 tool calls gives you none of those.
 
+## The loop
+
+**Check for a helper → write Python → read the delta → iterate.**
+
+Before writing anything non-trivial, call `search_helpers`. The library is where
+already-solved problems live, and rewriting one by hand is wasted work that also
+tends to be subtly wrong in ways the helper already handles.
+
+## Finding a helper
+
+`search_helpers` takes your task in your own words, plus the categories you think
+it falls under. You do the classifying — that part is your job, not the server's.
+
+Every helper has exactly one **job**:
+
+| job | what it does |
+|---|---|
+| `acquire` | bring data in from outside the process |
+| `parse` | turn serialized or unstructured input into structure |
+| `transform` | structured to structured: reshape, filter, join, aggregate |
+| `inspect` | answer a question about something without changing it |
+| `present` | format existing data for reading |
+| `generate` | produce a new artifact: code, text, config |
+| `mutate` | change external state: write, commit, POST |
+| `orchestrate` | sequence, retry, or parallelize other helpers |
+
+and one to three **domains**: `ast`, `data`, `db`, `fs`, `git`, `github`, `http`,
+`shell`, `text`, `time`.
+
+Pick one or two of each. Too narrow and you miss the right helper; too broad and
+you get noise. "Read a CSV and total a column" is `parse` + `transform` over
+`data`, `fs`.
+
+Then call `describe_helper` on anything promising **before using it**. The
+signature alone is not enough — the card tells you the exact return shape, what
+each parameter means, how it fails, and when *not* to use it. Read it.
+
+Helpers are already imported in the interpreter, so just call them. The same
+lookup works in code if you'd rather stay in Python: `helpers.search("...")`,
+`helpers.card("name")`, `helpers.jobs()`.
+
 ## The interpreter is persistent
 
 `run_python` runs in one long-lived session. Variables, imports, and function
@@ -55,10 +96,13 @@ one-off shell commands. Reach for Python when the work composes.
 Print what you need to see and nothing else. If output is truncated, the full text
 is in `_out`, so you can slice it instead of re-running the call.
 
-## A note on what's coming
+## When a helper is missing or wrong
 
-This plugin is being built toward a library of approved, reusable helper functions
-that accumulate over time. That machinery isn't here yet. For now, if you notice
-yourself writing the same non-trivial block for the second or third time, say so
-plainly in your reply — those observations are exactly what the helper library will
-be built from.
+If you find yourself writing the same non-trivial block for the second or third
+time, say so plainly in your reply — that is what the library should absorb, and
+those observations are how it grows.
+
+If a helper's behaviour contradicts its card, **report that rather than working
+around it**. Quietly writing your own corrected copy hides a defect that would
+otherwise get fixed once, for everyone. The card is meant to be trustworthy; a
+place where it isn't is worth more as a bug report than as a workaround.
