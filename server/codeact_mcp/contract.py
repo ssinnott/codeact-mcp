@@ -83,7 +83,11 @@ def run_examples(path: Path, examples: list[dict], timeout: float = DEFAULT_TIME
             for ex in examples
         ]
 
-    _, marker, payload = proc.stdout.partition(MARKER)
+    # rpartition, not partition: an example's own prints are captured, but a
+    # subprocess it spawns inherits the real stdout and could emit the marker.
+    # Splitting on the last occurrence means only the runner's own trailing
+    # payload is ever parsed.
+    _, marker, payload = proc.stdout.rpartition(MARKER)
     if not marker:
         detail = (proc.stderr or proc.stdout).strip()[-500:]
         return [

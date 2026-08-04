@@ -39,8 +39,9 @@ class Client:
         self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
         self.proc.stdin.flush()
 
-    def tool(self, name, **args):
-        reply = self.call("tools/call", {"name": name, "arguments": args})
+    def tool(self, tool_name, /, **args):
+        # Positional-only, so a tool taking its own `name` argument still works.
+        reply = self.call("tools/call", {"name": tool_name, "arguments": args})
         return reply["result"]["content"][0]["text"]
 
     def close(self):
@@ -76,10 +77,55 @@ class TestProtocol(unittest.TestCase):
     def test_tools_are_listed_with_schemas(self):
         tools = self.c.call("tools/list")["result"]["tools"]
         names = {t["name"] for t in tools}
-        self.assertEqual(names, {"run_python", "session_state", "restart_session"})
+        self.assertEqual(
+            names,
+            {
+                "run_python",
+                "session_state",
+                "restart_session",
+                "search_helpers",
+                "describe_helper",
+            },
+        )
         for tool in tools:
             self.assertTrue(tool["description"].strip())
             self.assertEqual(tool["inputSchema"]["type"], "object")
+
+    def test_search_helpers_returns_index_lines(self):
+        out = self.c.tool("search_helpers", task="read a jsonl file of records")
+        self.assertIn("read_jsonl", out)
+        self.assertIn("describe_helper", out)  # tells the agent the next step
+
+    def test_search_respects_job_filter(self):
+        out = self.c.tool("search_helpers", task="anything", jobs=["acquire"])
+        self.assertNotIn("read_jsonl", out)  # read_jsonl is `parse`, not `acquire`
+
+    def test_describe_helper_returns_the_contract_not_the_source(self):
+        out = self.c.tool("describe_helper", name="read_jsonl")
+        self.assertIn("Use when:", out)
+        self.assertIn("Don't use when:", out)
+        self.assertIn("Returns:", out)
+        # The implementation must not leak through the card.
+        self.assertNotIn("def read_jsonl", out)
+        self.assertNotIn("json.loads", out)
+
+    def test_describe_unknown_helper_suggests_alternatives(self):
+        out = self.c.tool("describe_helper", name="jsonl")
+        self.assertIn("No helper named", out)
+        self.assertIn("read_jsonl", out)  # substring hint
+
+    def test_helpers_are_preloaded_into_the_interpreter(self):
+        out = self.c.tool("run_python", code="callable(read_jsonl)")
+        self.assertIn("True", out)
+
+    def test_in_interpreter_discovery_facade(self):
+        out = self.c.tool("run_python", code="helpers.search('jsonl')")
+        self.assertIn("read_jsonl", out)
+
+    def test_preloaded_helpers_are_not_reported_as_session_state(self):
+        # They are always there; listing them as fresh state would be noise.
+        out = self.c.tool("run_python", code="x = 1")
+        self.assertNotIn("read_jsonl", out)
 
     def test_notifications_get_no_reply(self):
         # If a notification were answered, this tools/list reply would be the
