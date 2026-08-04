@@ -1,0 +1,43 @@
+{
+  "helpers": {
+    "retry_call": [
+      {
+        "code": "retry_call(lambda: 2 + 2)",
+        "note": "fn takes no arguments; bind them with a lambda or functools.partial. A first-attempt success never sleeps",
+        "output": "4",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_flaky, attempts=5, delay=0.001)",
+        "note": "_flaky raises on its first two calls then succeeds: the two failures are swallowed and the third call's value comes back",
+        "output": "'ready after 3 calls'",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_always, attempts=3, delay=0.001)",
+        "note": "_always raises every call and counts them. Attempts exhausted: the last exception is re-raised unchanged, and 'call 3' shows all three attempts really happened",
+        "output": "RuntimeError: still broken, call 3",
+        "ok": true
+      },
+      {
+        "code": "retry_call(_always, attempts=5, delay=0.001, retry_on=(KeyError,))",
+        "note": "RuntimeError is not in retry_on, so it propagates immediately \u2014 'call 1' proves no retry was attempted",
+        "output": "RuntimeError: still broken, call 1",
+        "ok": true
+      },
+      {
+        "code": "_sleep_schedule(attempts=3, delay=0.1, backoff=2.0)",
+        "note": "the wait schedule of a run that exhausts its attempts: 3 calls but only 2 sleeps, 0.1s then 0.2s. Nothing is slept after the final failure \u2014 the helper raises the moment call 3 fails rather than pausing first",
+        "output": "{'waits': [0.1, 0.2], 'calls_made': 3}",
+        "ok": true
+      },
+      {
+        "code": "retry_call(lambda: 1 / 0, attempts=0)",
+        "note": "attempts below 1 is rejected rather than returning None from a callable that was never invoked; same for any negative value",
+        "output": "ValueError: attempts must be at least 1, got 0",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "ed84e204cb2ba295"
+}

@@ -1,0 +1,67 @@
+{
+  "helpers": {
+    "extract_code_blocks": [
+      {
+        "code": "extract_code_blocks(_md)",
+        "note": "_md is a 14-line README holding a ```python fence, an untagged ``` fence and a ~~~json fence; every fence comes back in document order and the untagged one gets lang ''",
+        "output": "[{'lang': 'python', 'code': 'print(\"hi\")', 'start_line': 3}, {'lang': '', 'code': 'echo untagged', 'start_line': 9}, {'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang='JSON')",
+        "note": "one tag, matched exactly after stripping and lowercasing both sides \u2014 'JSON' finds _md's ~~~json fence",
+        "output": "[{'lang': 'json', 'code': '{\"a\": 1}', 'start_line': 13}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang='')",
+        "note": "lang='' selects exactly the fences that carried no language tag",
+        "output": "[{'lang': '', 'code': 'echo untagged', 'start_line': 9}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_readme, lang='python')",
+        "note": "_readme tags its three blocks ```sh, ```py and ```python3 \u2014 no alias table, so 'python' matches none of them and the result is empty rather than an error",
+        "output": "[]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_readme, lang=('py', 'python', 'python3'))",
+        "note": "same _readme: pass every spelling you accept and a block is kept if its tag equals any of them (the ```sh block still isn't one)",
+        "output": "[{'lang': 'py', 'code': 'import thing', 'start_line': 5}, {'lang': 'python3', 'code': 'import thing', 'start_line': 9}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks('```py\\r\\n\\r\\nx = 1\\r\\n\\r\\n```\\r\\n')",
+        "note": "CRLF is normalised, so no \\r survives; blank lines inside the fences are kept, so code both starts and ends with \\n",
+        "output": "[{'lang': 'py', 'code': '\\nx = 1\\n', 'start_line': 1}]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks('no fences here, just prose')",
+        "note": "no blocks is an empty list, not an error",
+        "output": "[]",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(b'```py\\nx\\n```')",
+        "note": "bytes (or a Path, or a file object) is refused loudly instead of silently finding nothing",
+        "output": "TypeError: markdown must be a str, got bytes; decode bytes or read the file yourself first",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang=[])",
+        "note": "an empty tag collection is a caller bug, not a request for zero blocks",
+        "output": "ValueError: lang is an empty collection, which would match nothing; pass lang=None to keep every block, or lang=\"\" to keep the untagged ones",
+        "ok": true
+      },
+      {
+        "code": "extract_code_blocks(_md, lang=['py', 3])",
+        "note": "every tag must be a str",
+        "output": "TypeError: every lang tag must be a str; got int (3)",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "b88eb517302ac42c"
+}

@@ -1,0 +1,25 @@
+{
+  "helpers": {
+    "text_stats": [
+      {
+        "code": "text_stats('hello world\\n\\n  the quick brown fox jumped\\n')",
+        "note": "3 lines: the trailing newline does not start a fourth, and the blank middle line counts in lines but not non_blank_lines",
+        "output": "{'lines': 3, 'non_blank_lines': 2, 'words': 7, 'characters': 42, 'longest_line_length': 28, 'longest_line_number': 3}",
+        "ok": true
+      },
+      {
+        "code": "text_stats('')",
+        "note": "empty text is all zeros; longest_line_number is 0 because there is no line 1",
+        "output": "{'lines': 0, 'non_blank_lines': 0, 'words': 0, 'characters': 0, 'longest_line_length': 0, 'longest_line_number': 0}",
+        "ok": true
+      },
+      {
+        "code": "text_stats('a\\tb  c')",
+        "note": "words splits on any run of whitespace, so the tab and the double space each separate one word; characters counts the tab as 1",
+        "output": "{'lines': 1, 'non_blank_lines': 1, 'words': 3, 'characters': 6, 'longest_line_length': 6, 'longest_line_number': 1}",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "1536a174dd0a05f0"
+}

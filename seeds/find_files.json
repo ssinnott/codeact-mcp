@@ -1,0 +1,49 @@
+{
+  "helpers": {
+    "find_files": [
+      {
+        "code": "_rel(find_files(_root, include=['*.py']))",
+        "note": "_rel only trims the temp prefix for display; the real return is full paths. node_modules/ and .git/ are pruned without being asked",
+        "output": "['app.py', 'app_test.py', 'build/out.py', 'src/util.py', 'src/util_test.py']",
+        "ok": true
+      },
+      {
+        "code": "_rel(find_files(_root, include=['*.py'], exclude=['*_test.py', 'build']))",
+        "note": "'*_test.py' drops files by name; 'build' matches a directory and prunes it",
+        "output": "['app.py', 'src/util.py']",
+        "ok": true
+      },
+      {
+        "code": "_rel(find_files(_root, include=['src/*']))",
+        "note": "a pattern containing '/' is matched against the path relative to root, never against the bare filename",
+        "output": "['src/data.json', 'src/util.py', 'src/util_test.py']",
+        "ok": true
+      },
+      {
+        "code": "_rel(find_files(_root, include=['util.py']))",
+        "note": "no '/' in the pattern, so it is matched against the bare filename at any depth \u2014 src/util.py is found without naming src",
+        "output": "['src/util.py']",
+        "ok": true
+      },
+      {
+        "code": "find_files(_root, include='*.py')",
+        "note": "a bare string is refused: it satisfies Sequence[str] but iterates into '*', '.', 'p', 'y', and '*' would match every file. Pass ['*.py'], not '*.py'",
+        "output": "TypeError: include must be a sequence of patterns, not a bare string: pass ['*.py'], not '*.py'. A bare string is iterated character by character, so '*' alone would match every file.",
+        "ok": true
+      },
+      {
+        "code": "find_files(_root, include=[os.path.join(_root, 'src', '*.py')])",
+        "note": "patterns are matched against root-relative paths, so an absolute pattern is an error rather than a silent empty result",
+        "output": "ValueError: include pattern '/tmp/tmpbvccpuc1/src/*.py' is absolute, and patterns are matched against paths relative to root \u2014 it would never match. Drop the root prefix: pass 'src/*.py', not '/home/me/proj/src/*.py'.",
+        "ok": true
+      },
+      {
+        "code": "find_files(os.path.join(_root, 'does-not-exist'))",
+        "note": "a missing root is an error, not an empty list",
+        "output": "FileNotFoundError: no such directory: /tmp/tmpbvccpuc1/does-not-exist",
+        "ok": true
+      }
+    ]
+  },
+  "source_hash": "8b757bbfed03e6b5"
+}
