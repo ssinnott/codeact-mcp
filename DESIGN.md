@@ -51,7 +51,8 @@ codeact-mcp/                        # this repo = the plugin
     ├── registry.py       # helper storage, load, preload into namespace
     ├── cards.py          # compile + validate usage contracts, run contract tests
     ├── validate.py       # the proposal gate
-    └── telemetry.py      # usage counts, repeat-pattern detection
+    ├── corpus.py         # log every executed block + outcome
+    └── miner.py          # offline: fingerprint, cluster, rank, synthesize
 ```
 
 Helpers do **not** live in this repo. They accumulate in the *consuming* project:
@@ -60,7 +61,8 @@ Helpers do **not** live in this repo. They accumulate in the *consuming* project
 <user project>/.codeact/
 ├── helpers/<name>.py        # code + its card, one file — reviewable, diffable, tracked
 ├── proposals/<id>.json      # pending, awaiting human approval
-└── telemetry.jsonl          # usage + outcomes (gitignored)
+├── corpus.jsonl             # every executed block + outcome (local, gitignored)
+└── fingerprints.db          # normalized AST hashes for cross-session mining
 ```
 
 Two scopes: **project** (`./.codeact/`, checked in, shared with the team) and **user**
@@ -170,21 +172,97 @@ legitimately need to see it. It is not part of the discovery path.
 
 Debugging deliberately does *not* qualify. If a helper fails in a way its card didn't
 predict, the correct outcome is a flagged helper and a human fix, not an agent reverse
-engineering the body and routing around the damage. Telemetry already tracks failure
-rates (§10); an unexplained failure should feed that, not be silently absorbed.
+engineering the body and routing around the damage. The miner's revision queue (§6)
+already watches failure rates; an unexplained failure should feed that, not be silently
+absorbed by an agent working around it.
 
 ---
 
 ## 6. The accumulation loop
 
-**Propose.** The skill gives the agent a crisp rule, because otherwise it will spam
-proposals: propose only when the same non-trivial pattern has been written **at least
-twice**, the interface is stable, it isn't already a helper, and it isn't a one-liner
-wrapper around stdlib. The test to give the agent: *would a future session, with no
-memory of this task, be better off?*
+Candidates arrive on **two tracks**, and the second is the one that carries the weight.
 
-The server helps: `telemetry.py` mines the execution log for near-duplicate blocks and
-volunteers "you've written this three times — consider proposing it."
+### Track 1 — in-session, opportunistic
+
+The agent proposes when it's obvious and cheap. The skill gives it a crisp rule, because
+otherwise it will spam proposals: propose only when the same non-trivial pattern has been
+written at least twice, the interface is stable, it isn't already a helper, and it isn't a
+one-liner around stdlib. The test: *would a future session, with no memory of this task,
+be better off?*
+
+This track is real but unreliable, and the design shouldn't lean on it. Mid-task, the
+agent is task-focused and correctly reluctant to stop and do library maintenance — so it
+will do a lot inline. More fundamentally, the strongest evidence for a helper is
+*repetition across sessions*, which by construction is invisible from inside any one of
+them.
+
+### Track 2 — offline mining
+
+So the systematic path is a background job over the corpus of everything ever executed.
+Every `run_python` call already passes through the server, so it logs the block, its
+outcome, duration, which helpers it called, which capabilities the guard flagged (§9),
+and enough task context to say what it was for.
+
+The pipeline: **normalize → cluster → rank → synthesize → queue for review.**
+
+*Normalize and cluster.* Canonicalize the AST — local names to positional placeholders,
+literals to type tokens — then fingerprint subtrees. That catches same-shape-different-
+names, which is the common case and what plain text hashing misses. A second pass over
+call-sequence n-grams (`open → json.load → filter → sort`) catches idioms that recur
+without being structurally similar. Embedding-based clustering is the expensive fallback
+if those two underdeliver; I'd not start there.
+
+*Rank.* Frequency alone is a bad signal. What actually predicts a good helper:
+
+- **spread across sessions** — five uses in one session is one task; five sessions is a habit
+- **failure cost** — code that errored and needed fixing before it worked is high-value to
+  encapsulate, because the helper bakes in the correction that was expensive to find
+- **shape stability** — if the pattern is still churning between sessions it's premature
+  to freeze; if it's converged, it's ready
+- **capability hits** — blocks the guard flagged are already privileged work looking for
+  a reviewed home (§9)
+- **near-miss against the existing library** — if a helper almost covers it, this is a
+  revision, not a new helper
+
+*Synthesize.* Clustering finds candidates; turning a cluster into a well-parameterized
+function with a complete card (§5) needs a model. That's an LLM pass over each surviving
+cluster, out of band, producing a proposal that then enters the same gate as track 1.
+
+### The miner produces four queues, not one
+
+New-helper candidates are only the obvious output. Three more matter as much:
+
+- **Revision candidates** — helpers that fail often, or that near-misses suggest should be
+  generalized
+- **Removal candidates** — helpers nothing has called in months, so the catalog doesn't
+  bloat with things that only cost tokens to list
+- **Retrieval failures** — inline code that matches the fingerprint of a helper that
+  *already exists*. This is the most valuable output of the whole miner: it means the
+  library was fine and **discovery** failed. That's a continuous, free eval of §7's
+  retrieval design running against real usage, and it distinguishes "we need another
+  helper" from "the agent couldn't find the one we have" — two problems with completely
+  different fixes that are otherwise indistinguishable.
+
+### When it runs
+
+Out of the hot path, always. Mining during a session would compete with the task for
+exactly the attention the task needs. Cheap incremental fingerprinting can run at
+`SessionEnd`; the expensive clustering and synthesis run as a periodic batch, since
+cross-session spread is the signal and that needs more than one session to exist.
+
+Results surface as a digest in `/codeact:review` — *"4 candidates from the last 12
+sessions, 2 retrieval failures"* — reviewed in batch at a moment the human chose.
+
+**Log from day one, mine later.** Same shape as the guard's audit mode: the corpus has to
+start accumulating in phase 1 even though nothing consumes it until much later, because a
+miner switched on against an empty history has nothing to find.
+
+One caveat to design in rather than bolt on: the corpus is executed code, which can
+contain secrets pulled from the environment or from files. It stays local and gitignored,
+long string literals are redacted before fingerprinting (fingerprints don't need them),
+and the synthesis pass sending code to a model should be an explicit, documented choice.
+
+### Shared by both tracks
 
 **Gate.** `propose_helper` rejects before a human ever sees it unless:
 
@@ -306,7 +384,9 @@ attached early. Two evals, both cheap, both alongside phase 2.
 **Retrieval hit rate.** Seed the library, write tasks where a specific helper is the right
 answer, and measure how often the agent finds and uses it rather than rewriting the thing
 from scratch. That tells us whether the job axis is carrying its weight or whether we're
-building a filing cabinet nobody opens.
+building a filing cabinet nobody opens. Once the miner exists (§6) this stops being a
+fixed test suite and becomes continuous: its retrieval-failure queue *is* this metric,
+measured against real usage rather than seeded tasks.
 
 **Card sufficiency.** Because the card is now the entire interface, it can be tested
 directly: give a fresh agent the card *alone* — no source, no context from the session
@@ -453,25 +533,29 @@ round trips to fix.
 
 | Phase | Ships | Why here |
 |---|---|---|
-| 1 | interpreter + `run_python` + skill, guard in **audit mode** from day one | useful on its own; audit logging starts collecting the data that sets the tier boundaries |
+| 1 | interpreter + `run_python` + skill, guard in **audit mode**, **corpus logging** | useful on its own; both logs start filling immediately, and neither is recoverable retroactively |
 | 2 | registry, **card format + contract tests**, job/domain taxonomy, `search_helpers`, `describe_helper`, preloading, seed helpers, **both evals** | proves the retrieval ergonomics and card sufficiency against hand-written content, before any of it is load-bearing |
 | 3 | `propose_helper`, validation gate, approval surfaces, **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 | layer 2 containment (Landlock + seccomp), capability grants, dependency install | the real boundary, once the policy layer has proven its tiers |
-| 5 | telemetry, repeat detection, ranking priors, promote/demote, user scope | makes accumulation self-sustaining |
+| 5 | **the miner** (fingerprint, cluster, rank, synthesize), the four queues, promote/demote, user scope | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 
-Phase 1 is a day. Phases 2–3 are where the design risk is. Two sequencing points worth
-keeping: phase 2 uses hand-written helpers so we can measure whether task-driven
-discovery works before building the machinery that generates the content, and guard
-enforcement waits for phase 3 because a wall with no door is just a broken tool — the
-escalation path has to exist before the blocking does.
+Phase 1 is a day. Phases 2–3 are where the design risk is. Three sequencing points worth
+keeping: phase 2 uses hand-written helpers so we can measure whether task-driven discovery
+works before building the machinery that generates the content; guard enforcement waits
+for phase 3 because a wall with no door is just a broken tool, so the escalation path has
+to exist before the blocking does; and both the corpus and the guard's audit log start
+recording in phase 1 despite nothing reading them until phases 3–5, because history is the
+one thing that can't be backfilled.
 
 ---
 
 ## 11. Open questions
 
-1. **Approval friction.** Both surfaces exist (inline elicitation vs batched
-   `/codeact:review`) — which is the default, and does inline approval interrupt the
-   agent's flow badly enough that batching should win?
+1. **How often should the miner run, and does it need a budget?** Batch review is now the
+   default surface (§6 track 2 lands there), which settles the friction question, but not
+   the cadence: nightly, weekly, or on an explicit `/codeact:mine`? The synthesis pass
+   costs model calls proportional to cluster count, so it likely needs a cap on candidates
+   per run — and a rule for what happens to clusters that keep getting deferred.
 2. **Seed library.** Ship with a starter set (file/AST/HTTP/git utilities) so discovery
    has something to find on day one, or stay empty so everything is earned?
 3. **Helper granularity.** One file per helper is maximally reviewable but awkward for
