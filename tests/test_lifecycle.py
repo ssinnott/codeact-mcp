@@ -132,6 +132,25 @@ class TestProposalGate(Case):
         proposals.reject(p.id, "not general enough")
         self.assertEqual(proposals.load(p.id).reason, "not general enough")
 
+    def test_reject_without_a_reason_still_counts_as_decided(self):
+        # The review app rejects with no reason at all, so `dismissed` rather
+        # than a non-empty `reason` is what marks a human decision.
+        p = proposals.propose("slugify", GOOD)
+        proposals.reject(p.id)
+        self.assertTrue(proposals.load(p.id).dismissed)
+
+    def test_a_dismissed_proposal_leaves_the_failed_tab(self):
+        from codeact_mcp.cli import review
+
+        broken = GOOD.replace(
+            'raise ValueError("nothing alphanumeric to slugify")', 'return "oops"'
+        )
+        p = proposals.propose("slugify", broken)
+        self.assertTrue(p.problems)
+        self.assertIn(p.id, [x["id"] for x in review.state()["failed"]])
+        proposals.reject(p.id)
+        self.assertNotIn(p.id, [x["id"] for x in review.state()["failed"]])
+
     def test_capability_escalation_in_a_revision_is_flagged(self):
         proposals.approve(proposals.propose("slugify", GOOD).id)
         risky = GOOD.replace(
