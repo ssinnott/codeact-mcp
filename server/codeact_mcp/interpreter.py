@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import config
+from . import config, paths
 
 WORKER = Path(__file__).with_name("worker.py")
 
@@ -102,7 +102,7 @@ class Session:
             raise SandboxUnavailable(
                 f"cannot start the interpreter as {config.get('run_as')!r}: "
                 f"{type(exc).__name__}: {exc}\n"
-                f"Run `python3 tools/sandbox.py` to check the setup, or clear "
+                f"Run `python3 {paths.cli()} sandbox` to check the setup, or clear "
                 f"`run_as` in ~/.codeact/config.json to run as yourself."
             ) from exc
 
@@ -130,7 +130,7 @@ class Session:
             f"the interpreter could not start as {runner!r}.\n{detail}\n\n"
             f"Grant it with this line in /etc/sudoers.d/codeact:\n"
             f"  {sudoers_line(runner)}\n"
-            f"Then check with `python3 tools/sandbox.py`."
+            f"Then check with `python3 {paths.cli()} sandbox`."
         )
 
     def _ensure(self) -> subprocess.Popen:

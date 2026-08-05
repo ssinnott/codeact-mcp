@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""Check — and explain — running the interpreter as a separate OS user.
+"""`codeact sandbox` — check, and explain, running the interpreter as another user.
 
-    python3 tools/sandbox.py                  # report on the current setting
-    python3 tools/sandbox.py codeact-runner   # check that user specifically
+    codeact sandbox                  report on the current setting
+    codeact sandbox codeact-runner   check that user specifically
 
 This is the only *enforced* boundary the system has. The AST guard is a policy
 layer that Python's dynamism can defeat; a different uid is enforced by the
@@ -11,17 +10,27 @@ kernel, and it is what actually stops the interpreter reading your ssh keys.
 
 from __future__ import annotations
 
+import argparse
 import os
 import pwd
 import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
-
-from codeact_mcp import config, interpreter, paths, secrets_store  # noqa: E402
+from .. import config, interpreter, paths, secrets_store
 
 OK, BAD, INFO = "  ok  ", " FAIL ", "  --  "
+
+
+def register(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "sandbox",
+        help="run the interpreter as a separate OS user",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("user", nargs="?", help="the account to check; default config")
+    parser.set_defaults(handler=run)
 
 
 def check(runner: str) -> bool:
@@ -95,8 +104,8 @@ def _reachability(runner: str, target: Path, label: str, want_denied: bool = Fal
     print(f"{mark} {label}: {state}\n       {target}")
 
 
-def main() -> int:
-    runner = sys.argv[1] if len(sys.argv) > 1 else config.get("run_as")
+def run(args: argparse.Namespace) -> int:
+    runner = args.user or config.get("run_as")
     if not runner:
         print("run_as is not set — the interpreter runs as you, the same as Bash does.\n")
         print("To isolate it, create a user and point config at it:\n")
@@ -119,7 +128,3 @@ def main() -> int:
         print("Not ready. The interpreter will refuse to start rather than quietly")
         print("running with your full privileges.")
     return 0 if ok else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -322,7 +322,7 @@ def build() -> Server:
             )
         return (
             f"Proposal {proposal.id} for {name!r} passed the gate and is pending review.\n"
-            f"A human approves it with `codeact review` or `python3 tools/approve.py "
+            f"A human approves it with `codeact review` or `codeact approve "
             f"{proposal.id}`. It is not callable until then.{note}\n\n"
             f"Card as it will be seen:\n{proposal.card}"
         )

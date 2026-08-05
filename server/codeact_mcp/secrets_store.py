@@ -172,6 +172,7 @@ def get(name: str, *, registry_names: set[str] | None = None) -> Secret:
     values = _read()
     if name not in values:
         raise KeyError(
-            f"no secret named {name!r} — set one with `python3 tools/secret.py set {name}`"
+            f"no secret named {name!r} — set one with "
+            f"`python3 {paths.cli()} secret set {name}`"
         )
     return Secret(name, values[name])

@@ -43,14 +43,7 @@ codeact-mcp/                        # this repo = the plugin
 ├── seeds/<name>.py                 # helpers shipped with the plugin, read-only
 ├── hooks/hooks.json                # PreToolUse(Bash) → the command policy
 ├── hooks/command_policy.py         # decides, using server/codeact_mcp/commands.py
-├── tools/                          # human surfaces, not agent tools
-│   ├── review.py + review.html     # the approval app: cards, diffs, trial runs
-│   ├── mine.py                     # the four queues, from the corpus
-│   ├── approve.py                  # approve or reject from a terminal
-│   ├── secret.py                   # manage secrets helpers may use
-│   ├── policy.py                   # which commands route through CodeAct
-│   ├── check.py / describe.py      # run the gate; print a card as the agent sees it
-│   └── eval_cards.py / eval_retrieval.py
+├── codeact                         # the human CLI — one command, no dependencies
 └── server/codeact_mcp/             # the MCP server (Python, stdio)
     ├── server.py         # MCP tool surface
     ├── protocol.py       # hand-rolled JSON-RPC, so there are no dependencies
@@ -68,8 +61,25 @@ codeact-mcp/                        # this repo = the plugin
     ├── search.py         # filter and rank
     ├── taxonomy.py       # the closed job and domain vocabularies
     ├── config.py         # ~/.codeact/config.json
-    └── miner.py          # fingerprint, cluster, rank, the four queues
+    ├── miner.py          # fingerprint, cluster, rank, the four queues
+    └── cli/              # the human surfaces, one module per command group
+        ├── overview.py   # `codeact` — library, queue, guard, policy, on one screen
+        ├── review.py + review.html   # the approval app: cards, diffs, trial runs
+        ├── approvals.py  # pending / show / approve / reject, from a terminal
+        ├── library.py    # check (the gate) and card (what the agent sees)
+        ├── mining.py     # the four queues, from the corpus
+        ├── policy.py     # which commands route through CodeAct
+        ├── secret.py     # manage secrets helpers may use
+        ├── sandbox.py    # check the run_as boundary and explain it
+        └── evals.py      # card sufficiency, retrieval accuracy
 ```
+
+The CLI lives **inside the package** rather than in a `tools/` directory of scripts.
+The human surfaces and the agent surface read the same registry, run the same gate, and
+answer to the same config, so they are one program with two front ends — and a human
+command that drifted from what the MCP server actually does would be worse than no
+command at all. One entry point also means one thing to alias, one `--help` to read, and
+one place where a new surface gets added.
 
 Helpers do **not** live in this repo, and — for now — they don't live in the consuming
 project either. **One library per machine, in the home directory:**

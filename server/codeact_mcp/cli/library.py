@@ -1,23 +1,35 @@
-#!/usr/bin/env python3
-"""Validate helpers and capture their example output.
+"""Inspecting and validating the library itself.
 
-    python3 tools/check.py                 # check every helper
-    python3 tools/check.py read_jsonl      # check one
-    python3 tools/check.py --capture       # write sidecars for everything clean
-
-This is the gate, runnable from a terminal. The review app will call the same
+`check` is the gate, runnable from a terminal: the review app calls the same
 code paths, so what a human approves in the UI is what this reports here.
+`card` prints exactly what the agent sees and nothing more — which is the only
+way to judge a card, since the agent never gets the source to fall back on.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+from .. import cards, contract, registry, taxonomy
 
-from codeact_mcp import cards, contract, registry  # noqa: E402
+
+def register(subparsers) -> None:
+    checker = subparsers.add_parser("check", help="validate helpers and their examples")
+    checker.add_argument("names", nargs="*", help="helper names; default all")
+    checker.add_argument(
+        "--capture",
+        action="store_true",
+        help="record real example output into the card's sidecar",
+    )
+    checker.set_defaults(handler=run_check)
+
+    carder = subparsers.add_parser("card", help="print a card as the agent sees it")
+    carder.add_argument("name", nargs="?")
+    carder.add_argument(
+        "--index", action="store_true", help="the job index and the whole catalog"
+    )
+    carder.set_defaults(handler=run_card)
 
 
 def examples_of(entry) -> list[dict]:
@@ -47,16 +59,7 @@ def check(entry, capture: bool) -> bool:
     return ok
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("names", nargs="*", help="helper names; default all")
-    parser.add_argument(
-        "--capture",
-        action="store_true",
-        help="record real example output into the card's sidecar",
-    )
-    args = parser.parse_args()
-
+def run_check(args: argparse.Namespace) -> int:
     reg = registry.Registry().load()
     errors = reg.errors
     if args.names:
@@ -86,5 +89,22 @@ def main() -> int:
     return 0 if passed == len(results) and not errors else 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def run_card(args: argparse.Namespace) -> int:
+    reg = registry.Registry().load()
+
+    if args.index or not args.name:
+        counts = reg.counts_by_job()
+        print("Jobs:")
+        for job, desc in taxonomy.JOBS.items():
+            print(f"  {job:<12} {counts.get(job, 0):>3}  {desc}")
+        print("\nHelpers:")
+        for entry in sorted(reg.available(), key=lambda e: e.name):
+            print(f"  {entry.card.index_line()}")
+        return 0
+
+    entry = reg.get(args.name)
+    if entry is None:
+        print(f"no helper named {args.name!r}", file=sys.stderr)
+        return 1
+    print(entry.card.render())
+    return 0
