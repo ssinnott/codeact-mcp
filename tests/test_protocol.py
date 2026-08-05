@@ -100,6 +100,50 @@ class TestProtocol(unittest.TestCase):
         meta = tools["request_capability"].get("_meta") or {}
         self.assertTrue(meta.get("anthropic/requiresUserInteraction"))
 
+    def _bad_call(self, tool_name, **args):
+        result = self.c.call("tools/call", {"name": tool_name, "arguments": args})["result"]
+        self.assertTrue(result.get("isError"), result)
+        return result["content"][0]["text"]
+
+    def test_a_misspelled_argument_names_the_real_ones(self):
+        # The bare TypeError this used to raise named neither the tool's
+        # arguments nor the typo, so the caller had nothing to correct against.
+        out = self._bad_call("describe_helper", nmae="read_jsonl")
+        self.assertIn("unknown argument 'nmae'", out)
+        self.assertIn("accepted: name", out)
+
+    def test_a_missing_required_argument_is_named(self):
+        out = self._bad_call("propose_helper", name="shout")
+        self.assertIn("missing required argument 'source'", out)
+
+    def test_every_argument_problem_is_reported_at_once(self):
+        out = self._bad_call("helper_source", nmae="read_jsonl")
+        self.assertIn("missing required argument 'name'", out)
+        self.assertIn("missing required argument 'reason'", out)
+        self.assertIn("unknown argument 'nmae'", out)
+
+    def test_a_wrong_type_is_refused_rather_than_silently_misread(self):
+        # jobs=<string> is a valid keyword argument, so this used to run: the
+        # string was iterated character by character and the search quietly
+        # matched nothing, which reads as "no such helper" rather than a defect.
+        out = self._bad_call("search_helpers", task="read jsonl", jobs="parse")
+        self.assertIn("'jobs' must be a array", out)
+        self.assertIn("read_jsonl", self.c.tool("search_helpers", task="jsonl", jobs=["parse"]))
+
+    def test_a_value_outside_the_taxonomy_says_what_is_available(self):
+        out = self._bad_call("search_helpers", task="anything", jobs=["ingest"])
+        self.assertIn("'ingest'", out)
+        self.assertIn("parse", out)  # the real vocabulary
+
+    def test_a_bad_enum_on_a_scalar_is_caught_too(self):
+        out = self._bad_call("request_capability", capability="everything", reason="why not")
+        self.assertIn("must be one of", out)
+        self.assertIn("network", out)
+
+    def test_valid_arguments_still_reach_the_handler(self):
+        self.assertIn("read_jsonl", self.c.tool("describe_helper", name="read_jsonl"))
+        self.assertIn("42", self.c.tool("run_python", code="6 * 7", timeout_s=5))
+
     def test_propose_helper_reports_every_gate_problem_at_once(self):
         out = self.c.tool(
             "propose_helper",

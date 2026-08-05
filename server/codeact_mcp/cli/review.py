@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import secrets
+import sys
 import threading
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -100,6 +102,19 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, payload: dict, status: int = 200) -> None:
         self._send(json.dumps(payload).encode(), "application/json", status)
 
+    def _failed(self, exc: Exception) -> None:
+        """Answer a broken request instead of dropping the connection.
+
+        BaseHTTPRequestHandler's default for an exception mid-handler is to log
+        it here and close the socket, which reaches the page as a rejected
+        fetch with nothing in it: the reviewer sees a blank app stuck on
+        "loading…" and no hint that anything went wrong, let alone what. One bad
+        proposal on disk should not make the whole queue unreachable and silent.
+        """
+        detail = traceback.format_exc()
+        print(f"review: request failed\n{detail}", file=sys.stderr)
+        self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+
     def do_GET(self) -> None:
         if not self._authorized():
             return self._send(b"forbidden", "text/plain", 403)
@@ -107,12 +122,21 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/":
             return self._send(PAGE.encode(), "text/html; charset=utf-8")
         if route == "/api/state":
-            return self._json(state())
+            try:
+                return self._json(state())
+            except Exception as exc:
+                return self._failed(exc)
         self._send(b"not found", "text/plain", 404)
 
     def do_POST(self) -> None:
         if not self._authorized():
             return self._send(b"forbidden", "text/plain", 403)
+        try:
+            return self._route_post()
+        except Exception as exc:
+            return self._failed(exc)
+
+    def _route_post(self) -> None:
         route = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
         try:

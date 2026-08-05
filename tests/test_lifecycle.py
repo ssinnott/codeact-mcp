@@ -4,7 +4,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
@@ -14,6 +18,7 @@ from codeact_mcp import (  # noqa: E402
     interpreter,
     guard,
     miner,
+    paths,
     proposals,
     registry,
     secrets_store,
@@ -141,6 +146,84 @@ class TestProposalGate(Case):
         p = proposals.propose("slugify", risky, revises="slugify")
         self.assertTrue(p.diff.get("escalates"), p.problems)
         self.assertIn("TOKEN", p.diff.get("secrets_gained", []))
+
+
+class TestReviewableAtEveryExit(Case):
+    """Whatever the gate decides, the human has to be able to see the result.
+
+    Both cases here are gate exits that used to return before the status was
+    decided, so the proposal was filed as pending and — having produced no card
+    — showed up in the reviewer's queue as an entry with nothing in it.
+    """
+
+    def test_source_that_does_not_import_is_filed_as_rejected(self):
+        p = proposals.propose("broken", "this is not python(")
+        self.assertEqual(p.status, proposals.REJECTED)
+        self.assertEqual(proposals.load(p.id).status, proposals.REJECTED)
+
+    def test_source_without_the_named_helper_is_filed_as_rejected(self):
+        p = proposals.propose("nope", GOOD)
+        self.assertEqual(p.status, proposals.REJECTED)
+
+    def test_a_failed_proposal_does_not_sit_in_the_pending_queue(self):
+        p = proposals.propose("broken", "this is not python(")
+        self.assertNotIn(p.id, [x.id for x in proposals.listing(proposals.PENDING)])
+        self.assertIn(p.id, [x.id for x in proposals.listing(proposals.REJECTED)])
+
+    def test_the_review_app_shows_it_under_failed_with_its_problems(self):
+        from codeact_mcp.cli import review
+
+        p = proposals.propose("broken", "this is not python(")
+        state = review.state()
+        self.assertEqual([x["id"] for x in state["pending"]], [])
+        shown = [x for x in state["failed"] if x["id"] == p.id]
+        self.assertEqual(len(shown), 1)
+        # No card is renderable here, so the problems are the whole explanation.
+        self.assertTrue(shown[0]["problems"])
+
+    def test_an_unknown_field_does_not_make_a_proposal_disappear(self):
+        p = proposals.propose("slugify", GOOD)
+        raw = json.loads(p.path.read_text())
+        raw["invented_by_a_later_version"] = True
+        p.path.write_text(json.dumps(raw))
+
+        loaded = proposals.load(p.id)
+        self.assertIsNotNone(loaded, "a proposal must survive a field it does not know")
+        self.assertEqual(loaded.name, "slugify")
+        self.assertIn(p.id, [x.id for x in proposals.listing()])
+
+    def test_a_missing_field_falls_back_rather_than_vanishing(self):
+        p = proposals.propose("slugify", GOOD)
+        raw = json.loads(p.path.read_text())
+        del raw["created"]
+        p.path.write_text(json.dumps(raw))
+        self.assertEqual(proposals.load(p.id).name, "slugify")
+
+    def test_a_record_with_no_id_is_the_one_thing_refused(self):
+        # Without an id there is no approve or reject to offer.
+        paths.ensure()
+        path = paths.proposals_dir() / "headless.json"
+        path.write_text(json.dumps({"name": "ghost", "status": "pending"}))
+        self.assertEqual(proposals.listing(), [])
+
+    def test_a_broken_api_request_answers_instead_of_dropping_the_socket(self):
+        from codeact_mcp.cli import review
+
+        original = review.state
+        review.state = lambda: (_ for _ in ()).throw(RuntimeError("disk on fire"))
+        self.addCleanup(setattr, review, "state", original)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), review.Handler)
+        self.addCleanup(server.server_close)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+
+        url = f"http://127.0.0.1:{server.server_port}/api/state?t={review.TOKEN}"
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(url, timeout=10)
+        self.assertEqual(caught.exception.code, 500)
+        # The page needs the reason, not a closed connection it cannot explain.
+        self.assertIn("disk on fire", json.loads(caught.exception.read())["error"])
 
 
 class TestGuardEnforcement(Case):
