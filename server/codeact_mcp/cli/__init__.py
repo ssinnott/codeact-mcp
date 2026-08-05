@@ -25,16 +25,39 @@ import os
 import sys
 from pathlib import Path
 
-from . import approvals, evals, library, mining, overview, policy, review, sandbox, secret
+from . import (
+    approvals,
+    evals,
+    library,
+    mining,
+    overview,
+    policy,
+    review,
+    sandbox,
+    secret,
+    trace,
+)
 
 # Order is the order they appear in --help, grouped by what you'd be doing.
-MODULES = (overview, review, approvals, library, mining, policy, secret, sandbox, evals)
+MODULES = (
+    overview,
+    review,
+    approvals,
+    library,
+    mining,
+    trace,
+    policy,
+    secret,
+    sandbox,
+    evals,
+)
 
 EPILOG = """\
 where to start:
   codeact                      everything's current state, on one screen
   codeact review               decide on what the agent has proposed
   codeact check --capture      validate helpers and record their real output
+  codeact trace last           everything the last session ran, and what came back
   codeact policy enforce       route kubectl and friends through CodeAct
 
 `codeact <command> --help` for the detail on any of them. The library lives in

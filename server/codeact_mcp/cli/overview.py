@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 
-from .. import commands, config, paths, proposals, registry, secrets_store
+from .. import commands, config, paths, proposals, registry, secrets_store, trace
 
 
 def register(subparsers) -> None:
@@ -97,4 +97,16 @@ def run(_args: argparse.Namespace) -> int:
         "corpus",
         f"{size} block(s) recorded" + ("   `codeact mine`" if size else " — nothing to mine yet"),
     )
+
+    traces = trace.files()
+    if not settings.get("trace"):
+        _line("traces", "off — sessions are not recorded   `trace: true` in config.json")
+    elif traces:
+        latest = trace.summarize(trace.read(traces[0]))
+        _line(
+            "traces",
+            f"{len(traces)} session(s), last {latest['runs']} run(s)   `codeact trace last`",
+        )
+    else:
+        _line("traces", "on — nothing recorded yet   `codeact trace`")
     return 0

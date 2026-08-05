@@ -34,12 +34,28 @@ def corpus_path() -> Path:
     return root() / "corpus.jsonl"
 
 
+def traces_dir() -> Path:
+    """One transcript per interpreter session — see trace.py."""
+    return root() / "traces"
+
+
+IGNORED = ("corpus.jsonl", "fingerprints.db", "*.log", "traces/")
+
+
 def ensure() -> Path:
     """Create the tree if absent. Safe to call on every startup."""
     r = root()
-    for d in (r, helpers_dir(), proposals_dir()):
+    for d in (r, helpers_dir(), proposals_dir(), traces_dir()):
         d.mkdir(parents=True, exist_ok=True)
     gitignore = r / ".gitignore"
-    if not gitignore.exists():
-        gitignore.write_text("corpus.jsonl\nfingerprints.db\n*.log\n")
+    # Rewritten when an entry is missing, not only when the file is absent:
+    # traces hold session output, and an install that predates them would
+    # otherwise keep an ignore file that never learns to exclude it.
+    try:
+        current = gitignore.read_text().splitlines() if gitignore.exists() else []
+        missing = [line for line in IGNORED if line not in current]
+        if missing:
+            gitignore.write_text("\n".join(current + missing) + "\n")
+    except OSError:
+        pass
     return r
