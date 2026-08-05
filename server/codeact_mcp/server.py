@@ -15,6 +15,7 @@ from . import (
     search as search_mod,
     secrets_store,
     taxonomy,
+    trace,
 )
 from .interpreter import Session, Timeout
 from .protocol import Server
@@ -134,19 +135,40 @@ def build() -> Server:
                     guard_findings=findings,
                     error_type="GuardBlocked",
                 )
+                trace.executed(
+                    code,
+                    outcome="blocked",
+                    duration_ms=0,
+                    timeout_s=timeout,
+                    findings=findings,
+                    note=f"refused: {', '.join(sorted({f.name for f in blocked}))}",
+                )
                 return guard.refusal(blocked)
 
         started = time.monotonic()
         try:
             payload = session().execute(code, timeout)
         except Timeout as exc:
+            elapsed = int((time.monotonic() - started) * 1000)
             corpus.record(
                 code,
                 outcome="timeout",
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=elapsed,
                 guard_findings=findings,
                 error_type="Timeout",
             )
+            trace.executed(
+                code,
+                outcome="timeout",
+                duration_ms=elapsed,
+                timeout_s=timeout,
+                findings=findings,
+                note=str(exc),
+            )
+            # The session manager restarts on the way out of a timeout, so the
+            # namespace every later block sees is empty. A transcript that
+            # skipped that would read as though state simply vanished.
+            trace.restarted("timeout")
             return f"timeout: {exc}"
 
         elapsed = int((time.monotonic() - started) * 1000)
@@ -157,6 +179,14 @@ def build() -> Server:
             duration_ms=elapsed,
             guard_findings=findings,
             error_type=_error_type(error),
+        )
+        trace.executed(
+            code,
+            outcome="error" if error else "ok",
+            duration_ms=elapsed,
+            timeout_s=timeout,
+            findings=findings,
+            payload=payload,
         )
         return _format(payload, findings)
 
@@ -175,6 +205,7 @@ def build() -> Server:
         except Timeout as exc:
             return f"timeout: {exc}"
         names = payload.get("names") or []
+        trace.inspected(len(names))
         if not names:
             return "The interpreter namespace is empty."
         lines = [f"{n['name']} ({n['type']}) {n['repr']}" for n in names]
@@ -357,6 +388,7 @@ def build() -> Server:
             outcome="source_read",
             duration_ms=0,
         )
+        trace.source_read(name, reason)
         return f"# {entry.path}\n\n{entry.path.read_text()}"
 
     @server.tool(
@@ -386,6 +418,7 @@ def build() -> Server:
     )
     def request_capability(capability: str, reason: str) -> str:
         _session_grants.add(capability)
+        trace.granted(capability, reason)
         return (
             f"Granted `{capability}` for this session only. It disappears when the "
             "session ends; propose_helper is how it becomes permanent."
@@ -402,6 +435,7 @@ def build() -> Server:
     )
     def restart_session() -> str:
         session().restart()
+        trace.restarted("requested")
         return "Interpreter restarted. The namespace is empty."
 
     return server
@@ -409,10 +443,15 @@ def build() -> Server:
 
 def main() -> None:
     paths.ensure()
+    trace.begin(VERSION)
     try:
         build().run()
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     finally:
+        # Closing the transcript before stopping the worker: the stop can hang
+        # on a wedged process, and an unterminated trace is the one case where
+        # the record is least trustworthy and most likely to be read.
+        trace.end()
         if _session is not None:
             _session.stop()

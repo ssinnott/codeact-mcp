@@ -22,6 +22,11 @@ DEFAULTS: dict[str, Any] = {
     "granted": [],
     # Seconds a single run_python call may take before it is interrupted.
     "timeout": 30,
+    # Keep a per-session transcript of everything the interpreter ran and
+    # returned, for reading after the fact with `codeact trace`. On by default:
+    # the reason to want one is almost always a session that has already gone
+    # wrong, and by then it is too late to switch it on.
+    "trace": True,
     # Run the interpreter as a different OS user. This is the one real
     # containment boundary in the system — the AST guard is policy, but a
     # different uid is enforced by the kernel. Null means "same user as Claude

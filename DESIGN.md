@@ -57,7 +57,8 @@ codeact-mcp/                        # this repo = the plugin
     ├── guard.py          # capability tiers, enforcement, refusals
     ├── commands.py       # layer 0: shell commands that belong in CodeAct instead
     ├── secrets_store.py  # Secret wrapper, access control, egress redaction
-    ├── corpus.py         # log every executed block + outcome
+    ├── corpus.py         # log every executed block + outcome, for the miner
+    ├── trace.py          # per-session transcript: code in, output back, in order
     ├── search.py         # filter and rank
     ├── taxonomy.py       # the closed job and domain vocabularies
     ├── config.py         # ~/.codeact/config.json
@@ -68,6 +69,7 @@ codeact-mcp/                        # this repo = the plugin
         ├── approvals.py  # pending / show / approve / reject, from a terminal
         ├── library.py    # check (the gate) and card (what the agent sees)
         ├── mining.py     # the four queues, from the corpus
+        ├── trace.py      # read a session transcript back after the fact
         ├── policy.py     # which commands route through CodeAct
         ├── secret.py     # manage secrets helpers may use
         ├── sandbox.py    # check the run_as boundary and explain it
@@ -158,6 +160,41 @@ Inside the interpreter the same discovery exists as plain Python — `helpers.se
 - Resource limits: `RLIMIT_AS`, `RLIMIT_CPU`, no fork bombs.
 
 What the agent is *allowed* to call inside that interpreter is the subject of §9.
+
+### The session transcript
+
+A persistent interpreter is the whole premise, and it is also the thing that makes a
+session hard to account for afterwards: state accumulates across a dozen calls, output is
+capped on the way back to the model, and the block that mattered scrolled out of the
+conversation long ago. "What did this actually run" has to be answerable from disk.
+
+So each session writes one append-only file, `~/.codeact/traces/<session>.jsonl` — code
+in, output back, in order, with the namespace delta, the guard's findings, the restarts
+and the grants. Read back with `codeact trace`.
+
+Deliberately **not** the corpus, though they share a session id so a mined candidate can
+be traced to the run it came from. The corpus is structure across sessions with the output
+stripped, because fingerprints don't need answers; the trace is one session with the
+answers kept, because a post-mortem is nothing but answers. Neither is a subset of the
+other and collapsing them would ruin both.
+
+Three properties it has to hold:
+
+- **The rules are part of the record.** The header carries the guard mode, the granted
+  capabilities, the command policy and `run_as` as they were *at the time*. Without them a
+  block that was permitted is indistinguishable from one today's config would refuse.
+- **Refusals and timeouts are events too.** The block the guard stopped is the most
+  interesting line in an audit and the one that never reaches the interpreter, so it is
+  recorded with everything that ran. `--code` keeps it, commented out, rather than
+  emitting a script that reads as a clean run of something that never completed.
+- **Redacted, bounded, and never fatal.** It stores output, which is where credentials
+  actually leak — a traceback from inside an HTTP library prints the header it was called
+  with — so egress redaction applies before the write, each field is capped, and every
+  failure inside the writer is swallowed. A transcript that takes a working session down
+  is worse than no transcript.
+
+On by default, unlike the guard's enforcement: the reason to want one is a session that
+has already gone wrong, and at that point switching it on is too late.
 
 ---
 

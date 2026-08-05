@@ -50,6 +50,7 @@ And one command for you, not the agent — `./codeact`, in this directory:
 codeact                 what the library and its policies look like right now
 codeact review          approve or reject proposals in a browser
 codeact mine            what the corpus suggests the library is missing
+codeact trace           what a session ran, and what came back
 codeact check           validate helpers, capture example output
 codeact card <name>     print a card exactly as the agent sees it
 codeact policy          which shell commands route through CodeAct
@@ -334,11 +335,40 @@ codeact secret set GITHUB_TOKEN
 
 ## What's recorded
 
-`~/.codeact/corpus.jsonl` logs each executed block with its outcome, duration, project,
-and guard findings. Nothing reads it yet; it accumulates now because the pattern miner
-that eventually consumes it needs history, and history can't be backfilled.
+Two logs, answering two different questions.
 
-It stays local, is gitignored, and credential-shaped strings are redacted before writing.
+**The session transcript** — `~/.codeact/traces/<session>.jsonl`, one file per interpreter
+session — is the record of what actually happened: every block of code, its stdout, its
+traceback, the last-expression value, the namespace delta, what the guard found, every
+restart and every capability you granted, in order, under a header saying which rules were
+in force at the time. That last part matters: *what was run* without *what was allowed*
+can't tell a block that was permitted from one today's config would refuse.
+
+```
+codeact trace                  every session on this machine, newest first
+codeact trace last             the most recent one, as a transcript
+codeact trace a1b2c3 --code    just the Python, as a script you can re-run
+codeact trace --prune 30       drop anything older than 30 days
+```
+
+`--code` throws the output away on purpose: for reproducing a session rather than reading
+it, the answers are noise and the questions are the artefact. Blocks that were refused or
+timed out stay in, commented, so the script can't read as a clean run of something that
+never completed.
+
+It's on by default — the reason to want a transcript is almost always a session that has
+already gone wrong, and by then it's too late to switch one on. `"trace": false` in
+`config.json` turns it off.
+
+**The corpus** — `~/.codeact/corpus.jsonl` — logs each executed block with its outcome,
+duration, project, and guard findings, across every session and every project, and
+deliberately without output: the pattern miner fingerprints structure, and fingerprints
+don't need the answers. Nothing reads it yet; it accumulates now because history can't be
+backfilled.
+
+Both stay local, are gitignored, and have credential-shaped strings redacted before
+writing — which matters more for the transcript, since it stores output, and a traceback
+raised inside an HTTP library prints the header it was called with.
 
 ## Development
 
