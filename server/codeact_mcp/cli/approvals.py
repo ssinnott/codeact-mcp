@@ -52,9 +52,12 @@ def show(proposal) -> None:
         for problem in proposal.problems:
             print(f"  - {problem}")
     print("\n--- card ---")
-    print(proposal.card)
+    print(
+        proposal.card
+        or "(none: the gate stopped before a card could be rendered — see problems above)"
+    )
     print("\n--- source (the agent never sees this) ---")
-    print(proposal.source)
+    print(proposal.source or "(empty)")
 
 
 def run_pending(args: argparse.Namespace) -> int:

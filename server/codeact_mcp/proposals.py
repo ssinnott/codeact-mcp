@@ -14,7 +14,7 @@ import json
 import tempfile
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -56,11 +56,33 @@ class Proposal:
         return self
 
 
+def _from_json(text: str) -> Proposal | None:
+    """Rebuild a proposal from its file, tolerating fields we do not know.
+
+    `Proposal(**data)` is too strict for stored data: a file written by another
+    version of the dataclass — one field added, one renamed — raises TypeError,
+    and the proposal then vanishes from every listing and every `show`. Silently
+    dropping a pending review is the worst possible failure here, so unknown
+    fields are ignored and absent ones fall back to their defaults. A record
+    without an id has no way to be acted on, and only that is refused.
+    """
+    data = json.loads(text)
+    if not isinstance(data, dict) or not data.get("id"):
+        return None
+    known = {f.name for f in fields(Proposal)}
+    kept = {k: v for k, v in data.items() if k in known}
+    kept.setdefault("name", kept["id"])
+    kept.setdefault("source", "")
+    kept.setdefault("status", PENDING)
+    kept.setdefault("created", 0.0)
+    return Proposal(**kept)
+
+
 def load(proposal_id: str) -> Proposal | None:
     path = paths.proposals_dir() / f"{proposal_id}.json"
     try:
-        return Proposal(**json.loads(path.read_text()))
-    except (OSError, json.JSONDecodeError, TypeError):
+        return _from_json(path.read_text())
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
 
@@ -68,8 +90,10 @@ def listing(status: str = "") -> list[Proposal]:
     out = []
     for path in sorted(paths.proposals_dir().glob("*.json")):
         try:
-            proposal = Proposal(**json.loads(path.read_text()))
-        except (OSError, json.JSONDecodeError, TypeError):
+            proposal = _from_json(path.read_text())
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if proposal is None:
             continue
         if not status or proposal.status == status:
             out.append(proposal)
@@ -111,6 +135,21 @@ def _capability_delta(old: Any, new_meta) -> dict[str, Any]:
     return delta
 
 
+def _settle(proposal: Proposal) -> Proposal:
+    """Record the proposal under the status its problems imply.
+
+    Every exit from the gate goes through here. The early exits — source that
+    will not import, source defining no matching helper — used to return before
+    the status was decided, so a proposal that had already failed was filed as
+    `pending`: it sat in the reviewer's queue claiming to await a decision, with
+    an empty card because nothing ever got far enough to render one, and it was
+    missing from the failed queue where its problems would have explained it.
+    """
+    if proposal.problems:
+        proposal.status = REJECTED
+    return proposal.save()
+
+
 def propose(name: str, source: str, revises: str = "") -> Proposal:
     """Run the full gate and record a pending proposal. Installs nothing."""
     proposal = Proposal(
@@ -137,7 +176,7 @@ def propose(name: str, source: str, revises: str = "") -> Proposal:
         tmp, entries = _load_candidate(source, name)
     except Exception as exc:
         proposal.problems.append(f"source does not import: {type(exc).__name__}: {exc}")
-        return proposal.save()
+        return _settle(proposal)
 
     match = [e for e in entries if e.name == name]
     if not match:
@@ -145,7 +184,7 @@ def propose(name: str, source: str, revises: str = "") -> Proposal:
         proposal.problems.append(
             f"source defines no @helper named {name!r} (found: {found})"
         )
-        return proposal.save()
+        return _settle(proposal)
     if len(entries) > 1:
         proposal.problems.append(
             "define exactly one helper per proposal — "
@@ -186,9 +225,7 @@ def propose(name: str, source: str, revises: str = "") -> Proposal:
     if revises:
         proposal.diff = _capability_delta(reg.get(revises), meta)
 
-    if proposal.problems:
-        proposal.status = REJECTED
-    return proposal.save()
+    return _settle(proposal)
 
 
 def _similar_to(entry, reg) -> str:

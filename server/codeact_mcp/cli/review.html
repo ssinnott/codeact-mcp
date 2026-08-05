@@ -112,8 +112,12 @@ function proposal(p) {
     ${p.escalates ? `<p style="color:var(--warn);margin:10px 0 0"><b>This revision increases what the helper can reach.</b>
       ${esc(JSON.stringify(p.diff))} — review it as if it were a brand-new privileged helper.</p>` : ""}
     ${p.problems.length ? `<ul class="problems">${p.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-    <details open><summary>Card — this is all the agent will ever see</summary><pre>${esc(p.card)}</pre></details>
-    <details><summary>Source — the agent never sees this</summary><pre>${esc(p.source)}</pre></details>
+    ${p.card
+      ? `<details open><summary>Card — this is all the agent will ever see</summary><pre>${esc(p.card)}</pre></details>`
+      : `<p class="muted" style="margin:10px 0 0">No card: the gate stopped before one could be
+         rendered, so there is nothing here for the agent to read either. The problems above say
+         why; the source is below.</p>`}
+    <details${p.card ? "" : " open"}><summary>Source — the agent never sees this</summary><pre>${esc(p.source) || "(empty)"}</pre></details>
     ${t ? trialReport(t) : ""}
     <div class="actions">
       <button class="act" onclick="runTrial('${p.id}')">Trial run</button>
@@ -200,7 +204,20 @@ function library() {
 }
 
 async function load() {
-  S = await api("/api/state");
+  try {
+    S = await api("/api/state");
+    if (S.error) throw new Error(S.error);
+  } catch (e) {
+    // Never sit on "loading…" — a reviewer who cannot see the queue needs to
+    // know the queue is broken, not assume it is empty.
+    document.getElementById("status").textContent = "could not load";
+    document.getElementById("view").innerHTML =
+      `<div class="card escalates"><b>Could not load the review queue.</b>
+       <pre>${esc(e.message || e)}</pre>
+       <p class="muted">The proposals are still on disk — <code>codeact pending</code>
+       and <code>codeact show &lt;id&gt;</code> read them without this app.</p></div>`;
+    return;
+  }
   document.getElementById("status").textContent =
     `${S.pending.length} pending · ${S.helpers.length} helpers · ${S.queues.corpus_size} blocks recorded`;
   render();
