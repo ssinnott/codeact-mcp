@@ -237,6 +237,49 @@ def _preload() -> dict:
         return {}
 
 
+def _install_command_policy() -> None:
+    """Layer 0 inside the interpreter: cluster reads yes, cluster writes no.
+
+    The Bash hook keeps governed commands out of the shell; this keeps the
+    other half of that promise, which is that the route it points at — an
+    approved helper shelling out from in here — stays read-only against
+    anything that isn't demonstrably local.
+
+    Two constraints shape it. It has to be lexical: resolving the current
+    kubectl context means spawning kubectl, and this hook fires on spawning.
+    And it has to allocate nothing surprising, since `open` raises audit events
+    too — so the policy is built once, now, and the hook only ever reads it.
+
+    Same disclaimer as everywhere else: a policy layer, not a boundary. Code
+    that means to get around an audit hook can.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+        from codeact_mcp import commands, config
+
+        policy = commands.Policy.load(config.load())
+    except Exception:
+        return
+    if not policy.blocks_in_codeact:
+        return
+
+    def spawn_audit(event: str, args: tuple) -> None:
+        if event == "subprocess.Popen":
+            argv = args[1]
+        elif event in ("os.exec", "os.posix_spawn"):
+            argv = args[1]
+        else:
+            return
+        if isinstance(argv, (str, bytes)):
+            decision = policy.check_line(os.fsdecode(argv), surface=commands.CODEACT)
+        else:
+            decision = policy.check_argv(argv, surface=commands.CODEACT)
+        if not decision.allowed:
+            raise PermissionError(decision.message)
+
+    sys.addaudithook(spawn_audit)
+
+
 def main() -> None:
     # Move the protocol channel off fd 1 before running anything untrusted.
     protocol = os.fdopen(os.dup(1), "w", buffering=1)
@@ -246,6 +289,9 @@ def main() -> None:
 
     ns: dict = {"__name__": "__codeact__", "__builtins__": __builtins__}
     ns.update(_preload())
+    # After preloading: an audit hook cannot be removed, and helper imports
+    # legitimately spawn nothing, so there is no reason to police startup.
+    _install_command_policy()
 
     for line in sys.stdin:
         line = line.strip()

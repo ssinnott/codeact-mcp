@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import paths
+from . import commands, paths
 
 DEFAULTS: dict[str, Any] = {
     # audit | enforce — see §9. Enforcement only makes sense once there is a way
@@ -26,6 +26,11 @@ DEFAULTS: dict[str, Any] = {
     # different uid is enforced by the kernel. Null means "same user as Claude
     # Code", which is what Bash already grants.
     "run_as": None,
+    # Shell commands routed through CodeAct instead of Bash — see §9, layer 0.
+    # Ships off: these rules are a template, and blocking a command someone
+    # relies on without being asked is worse than blocking nothing. Flip the
+    # mode with `python3 tools/policy.py mode enforce`.
+    "commands": {"mode": "off", "rules": list(commands.DEFAULT_RULES)},
 }
 
 

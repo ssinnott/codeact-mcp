@@ -41,11 +41,14 @@ codeact-mcp/                        # this repo = the plugin
 ├── .mcp.json                       # bundled server, launched via ${CLAUDE_PLUGIN_ROOT}
 ├── skills/codeact/SKILL.md         # teaches the loop, discovery, and when to propose
 ├── seeds/<name>.py                 # helpers shipped with the plugin, read-only
+├── hooks/hooks.json                # PreToolUse(Bash) → the command policy
+├── hooks/command_policy.py         # decides, using server/codeact_mcp/commands.py
 ├── tools/                          # human surfaces, not agent tools
 │   ├── review.py + review.html     # the approval app: cards, diffs, trial runs
 │   ├── mine.py                     # the four queues, from the corpus
 │   ├── approve.py                  # approve or reject from a terminal
 │   ├── secret.py                   # manage secrets helpers may use
+│   ├── policy.py                   # which commands route through CodeAct
 │   ├── check.py / describe.py      # run the gate; print a card as the agent sees it
 │   └── eval_cards.py / eval_retrieval.py
 └── server/codeact_mcp/             # the MCP server (Python, stdio)
@@ -59,6 +62,7 @@ codeact-mcp/                        # this repo = the plugin
     ├── proposals.py      # the gate, and the only path from proposed to callable
     ├── trial.py          # audited trial runs for the review app
     ├── guard.py          # capability tiers, enforcement, refusals
+    ├── commands.py       # layer 0: shell commands that belong in CodeAct instead
     ├── secrets_store.py  # Secret wrapper, access control, egress redaction
     ├── corpus.py         # log every executed block + outcome
     ├── search.py         # filter and rank
@@ -75,6 +79,7 @@ project either. **One library per machine, in the home directory:**
 ├── helpers/<name>.py        # code + its card, one file each — tracked
 ├── proposals/<id>.json      # pending, awaiting human approval — tracked
 ├── corpus.jsonl             # every executed block + outcome, all projects — gitignored
+├── commands.log             # what the command policy saw and decided — gitignored
 └── fingerprints.db          # normalized AST hashes for cross-session mining — gitignored
 ```
 
@@ -553,6 +558,11 @@ instead of a vibe.
 - **Agent** `codeact` for delegating a whole task in this style.
 - A nudge hook (PostToolUse on repeated Read/Bash calls → "this is a `run_python` job")
   is possible but easy to make annoying. I'd ship it off by default, if at all.
+- A **blocking** hook is a different animal, and it shipped: `PreToolUse` on `Bash`
+  refuses configured commands and names the CodeAct route instead (§9, layer 0). It is
+  not an encouragement mechanism — nobody should route work through the library because
+  a nag suggested it — but where a command is genuinely too sharp for a shell, the
+  refusal is the honest place to say so.
 
 ---
 
@@ -671,6 +681,58 @@ also the honest input to the tier boundaries above, which are currently my guess
 One UX detail that matters more than it sounds: the guard should report **all** violations
 in a block at once, not the first. Otherwise a five-violation snippet costs five
 round trips to fix.
+
+### Layer 0: commands that shouldn't be in Bash at all
+
+The two layers above both start from "the agent is already inside the interpreter". There
+is an earlier question they can't answer, because `Bash` sits outside all of this: which
+commands should reach a shell in the first place?
+
+The motivating case is `kubectl`, and it is not really about kubectl. A single binary is
+both an everyday development tool and a production console, and which one it is depends
+entirely on **what it is pointed at** — a fact that lives in a config file rather than in
+the command line being run. `Bash(kubectl:*)` in a permission rule cannot see that
+difference. Neither can a human skimming a tool call.
+
+So the policy is stated in terms of the target rather than the verb:
+
+| | Bash | CodeAct |
+|---|---|---|
+| local cluster | anything | anything |
+| everywhere else | nothing | reads only |
+
+Why route the remainder into CodeAct rather than just denying it? Because denial with no
+route produces an agent that reformulates until something gets through, and because the
+work is usually legitimate — reading from staging to answer a question is fine, and the
+thing to prevent is *changing* it. Sending that through the library means the read arrives
+as a named helper somebody approved, which is the same flywheel as §9's escalation path:
+every wall is an invitation to propose something.
+
+**Two enforcement points, because they know different things.** A `PreToolUse` hook on
+`Bash` runs as its own process and can afford to ask `kubectl config current-context` what
+the command would actually hit, so it resolves the implicit target and refuses anything
+non-local. Inside the interpreter, an audit hook on process spawning cannot do that —
+resolving the context means spawning kubectl, and the hook fires on spawning — so it
+decides lexically: read-only verbs pass against any target, and a mutating verb passes
+only when the argv itself names a local context. That asymmetry is a real constraint
+honestly handled rather than a gap, and it produces a habit worth having: state-changing
+code says out loud what it is aimed at.
+
+**Everything unknown is treated as production.** An unresolvable context, a command that
+brings its own `--kubeconfig`, a verb not on the read-only list, a command line that
+doesn't parse — all refused. The cost of a false positive is one `--context` flag; the
+cost of a false negative is a deleted namespace.
+
+The same disclaimers as the rest of §9 apply, doubled. This parses shell text, and a shell
+is an interpreter: pipelines, `sudo`, `env`, `xargs` and `sh -c` are understood, and
+something determined to hide a command from it can. It exists to keep an honest agent out
+of production, not to contain a dishonest one. And the read-only verb lists are the same
+kind of informed guess the capability tiers were, which is why this ships **off**, with
+`audit` and `ask` sitting between off and `enforce`, and a log of everything it saw.
+
+Ruleset lives in `~/.codeact/config.json`; commands with no notion of a target (`terraform`,
+say) can be listed too, and get the simpler treatment — blocked in Bash, left to helper
+review in CodeAct, since a helper only exists because a human read it.
 
 ---
 

@@ -122,6 +122,19 @@ privileged capability, you get a refusal naming two routes. Prefer
 later session benefits, where `request_capability` lasts only this session and asks
 the human every time.
 
+## When Bash refuses a command
+
+Some commands are configured to run through CodeAct rather than the shell — typically
+ones that are harmless against a local environment and dangerous against a real one,
+like `kubectl`. The refusal says which target it saw and what is allowed instead.
+
+Take the route it names rather than looking for a spelling that gets through. In the
+interpreter, reads work against any target, and anything that changes state has to
+name a context that is local — the interpreter cannot look up which context is
+current, so an unnamed target counts as production. If no helper covers the read you
+need, `propose_helper` is the answer; a helper that writes to a real environment is
+not going to be approved, so build the read instead.
+
 ## When a helper is wrong
 
 If behaviour contradicts the card, **report it rather than working around it**.

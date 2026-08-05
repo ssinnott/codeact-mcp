@@ -51,10 +51,12 @@ python3 tools/review.py     # approve or reject proposals in a browser
 python3 tools/mine.py       # what the corpus suggests the library is missing
 python3 tools/secret.py     # manage secrets helpers may use
 python3 tools/check.py      # validate helpers, capture example output
+python3 tools/policy.py     # which shell commands route through CodeAct
 ```
 
 Plus a `codeact` skill that teaches the working loop and fires on multi-step data, file,
-parsing, and API tasks.
+parsing, and API tasks, and a `Bash` hook — off by default — that routes commands you
+name into CodeAct instead of the shell.
 
 ### The namespace delta
 
@@ -200,6 +202,69 @@ invitation to propose something.
 > in-process — attribute traversal, `__globals__`, deserialization — and pretending
 > otherwise would be worse than saying so. For a boundary the kernel actually enforces,
 > see `run_as` below.
+
+## Keeping commands out of Bash
+
+`kubectl` is two tools wearing one name. Against a local cluster it's an everyday
+development tool and blocking it would be pure friction; against a real one it's a
+production console with no undo. The difference isn't in the command — it's in which
+cluster the config file happens to be pointing at, which no `Bash(kubectl:*)` permission
+rule can see.
+
+So a `PreToolUse` hook decides on the **target**, not the verb:
+
+| | Bash | CodeAct |
+|---|---|---|
+| local cluster (`minikube`, `kind-*`, `docker-desktop`, …) | anything | anything |
+| everywhere else | nothing | reads only |
+
+```json
+// ~/.codeact/config.json
+{"commands": {"mode": "enforce", "rules": ["kubectl", "helm"]}}
+```
+
+```
+python3 tools/policy.py mode enforce               # off | audit | ask | enforce
+python3 tools/policy.py check 'kubectl get pods'   # decide, without running it
+python3 tools/policy.py block terraform            # Bash-block anything else
+python3 tools/policy.py log                        # what it has seen
+```
+
+**It ships off**, like the guard did — `audit` records without blocking, `ask` sends
+each one to you, `enforce` refuses. A refusal names the way through:
+
+```
+BLOCKED — `kubectl` here targets `prod-eks`, which is not a local cluster.
+
+Bash may target local clusters only (minikube, docker-desktop, kind-*, …). Anything
+else goes through CodeAct, where reads are allowed and writes are not:
+  1. search_helpers(task="…what you need to read…", job="inspect") — then call it
+     from run_python.
+  2. propose_helper(...) if nothing fits. Package the read you need; a helper that
+     changes state somewhere real will not be approved.
+
+If you meant the local cluster, switch to it first — `kubectl config use-context
+<local>` — or name it inline with `--context`.
+```
+
+The read-only half is enforced too, not just described: the interpreter refuses to spawn
+a mutating command unless the argv names a local context. It decides lexically rather
+than resolving the current context, because resolving it would mean spawning `kubectl`
+from inside the hook that fires on spawning — so in code the target has to be explicit,
+which is a good habit anyway.
+
+Everything unknown counts as production: an unresolvable context, a command bringing its
+own `--kubeconfig`, an unrecognized verb, a command line that doesn't parse. A false
+positive costs one `--context` flag.
+
+Commands with no notion of a target work too — `tools/policy.py block terraform` keeps it
+out of Bash and leaves CodeAct to helper review, since a helper only runs because someone
+read it.
+
+> Same disclaimer as the guard: **policy, not a security boundary.** It understands
+> pipelines, `sudo`, `env`, `xargs` and `sh -c`, and fails closed on what it can't parse,
+> but a shell is an interpreter and code that means to hide a command from it can. It
+> keeps an honest agent out of production; it does not contain a dishonest one.
 
 ## Running as a separate user
 
