@@ -42,6 +42,9 @@ class Proposal:
     requires_secrets: list[str] = field(default_factory=list)
     reason: str = ""
     diff: dict[str, Any] = field(default_factory=dict)
+    # A human said no, as opposed to the gate saying no. Both end up REJECTED,
+    # and the reason can be empty, so the decision is recorded on its own.
+    dismissed: bool = False
 
     @property
     def path(self) -> Path:
@@ -239,6 +242,7 @@ def reject(proposal_id: str, reason: str = "") -> tuple[bool, str]:
         return False, f"no proposal {proposal_id!r}"
     proposal.status = REJECTED
     proposal.reason = reason
+    proposal.dismissed = True
     proposal.save()
     return True, f"rejected {proposal.name}"
 

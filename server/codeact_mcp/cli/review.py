@@ -40,7 +40,14 @@ def register(subparsers) -> None:
 
 def state() -> dict:
     pending = proposals.listing(proposals.PENDING)
-    rejected = [p for p in proposals.listing(proposals.REJECTED) if not p.reason]
+    # "Failed the gate" means exactly that: it has problems and no human has
+    # ruled on it yet. `reason` is the pre-`dismissed` marker, kept so
+    # proposals rejected before that field existed stay dismissed.
+    rejected = [
+        p
+        for p in proposals.listing(proposals.REJECTED)
+        if p.problems and not (p.dismissed or p.reason)
+    ]
     reg = registry.registry(reload=True)
     queues = miner.queues(reg)
     return {

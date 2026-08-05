@@ -141,9 +141,7 @@ async function runTrial(id) {
 }
 
 async function decide(action, id) {
-  let reason = "";
-  if (action === "reject") { reason = prompt("Why?") ?? ""; }
-  const res = await api("/api/" + action, {id, reason});
+  const res = await api("/api/" + action, {id});
   document.getElementById("status").textContent = res.message || "";
   await load();
 }
