@@ -41,6 +41,7 @@ codeact-mcp/                        # this repo = the plugin
 ├── .mcp.json                       # bundled server, launched via ${CLAUDE_PLUGIN_ROOT}
 ├── skills/codeact/SKILL.md         # teaches the loop, discovery, and when to propose
 ├── seeds/<name>.py                 # helpers shipped with the plugin, read-only
+├── seeds/core/<name>.py            # shared pure code helpers may import (§12, unbuilt)
 ├── hooks/hooks.json                # PreToolUse(Bash) → the command policy
 ├── hooks/command_policy.py         # decides, using server/codeact_mcp/commands.py
 ├── codeact                         # the human CLI — one command, no dependencies
@@ -87,6 +88,7 @@ project either. **One library per machine, in the home directory:**
 ```
 ~/.codeact/                  # a local git repo — free history, diff, blame, revert
 ├── helpers/<name>.py        # code + its card, one file each — tracked
+├── core/<name>.py           # shared pure code, no cards, not discoverable (§12, unbuilt)
 ├── proposals/<id>.json      # pending, awaiting human approval — tracked
 ├── corpus.jsonl             # every executed block + outcome, all projects — gitignored
 ├── commands.log             # what the command policy saw and decided — gitignored
@@ -870,7 +872,272 @@ from a single execution.
 
 ---
 
-## 12. Suggested build order
+## 12. Shared code, and composition
+
+Two asks, one new thing. "Helpers should share a core library" and "helpers should
+compose" are the same edit to the model: **a helper may now depend on something other
+than the standard library.** Everything below follows from what that edge is allowed to
+point at, and from what has to happen when the thing at the far end changes.
+
+Today there is no such edge, and not by omission — it's enforced by accident. Helper files
+load by path under a generated module name (`codeact_helper_<stem>`) with neither helper
+directory on `sys.path`, so a sibling import raises `ModuleNotFoundError` at load time,
+the registry files the file under `errors`, and the helper is simply absent from search.
+Measured, not assumed: put the directory on the path and the same file loads fine, and the
+registry's `__module__` check already declines to re-register an imported helper as a
+second entry. The plumbing half is nearly there. What's missing is everything that decides
+whether an edge is *safe*, and that failure mode — silently absent, with the reason
+printed only by the CLI — is the first thing to fix, because it's about to get common.
+
+### Two layers, because they answer different questions
+
+The distinguishing question between shared core code and a helper isn't "is it reusable" —
+both are — but **who reads it**. A helper's audience is the agent, which never sees the
+source and works entirely from the card (§5). A core module's audience is the *author* of
+a helper, human or agent, who does see the source and therefore needs no card.
+
+That gives a rule sharp enough to settle every "should this be core or a helper" argument:
+**if the agent should be able to find it and call it, it's a helper; if only helper code
+should call it, it's core.** Core is never preloaded into the namespace, never indexed,
+never returned by search, and has no card. Give a core module a card and you have written
+a helper with extra steps.
+
+| layer | lives in | may import | reviewed as | the agent sees |
+|---|---|---|---|---|
+| session code | `run_python` | everything below | not at all | it wrote it |
+| **helpers** | `~/.codeact/helpers/<name>.py`, `seeds/` | stdlib · core · helpers | card + gate + trial run | the card, via search |
+| **core** | `~/.codeact/core/<name>.py`, `seeds/core/` | stdlib · core | source diff + its dependents' examples | nothing |
+| stdlib | — | — | — | it already knows it |
+
+Imports resolve through one name, so an edge is greppable and unambiguous: `from
+codeact.core import records` and `from codeact.helpers import group_by`. That's the
+existing `server/codeact.py` shim (which exists precisely so a helper file stays
+importable standalone) growing two submodules that resolve against the user's directory
+first and the shipped one second — the same shadowing rule the registry already uses.
+
+### Core is pure, by rule
+
+Not by convention. The gate can check a declared job against declared side effects (§7)
+only because a helper's body is the sole place its reach comes from. The moment that body
+can call into shared code, the check is worth exactly as much as whatever the shared code
+is allowed to do. Two ways to keep it honest: propagate effects out of core the way we're
+about to propagate them along helper edges, or forbid core from having any.
+
+Forbidding is better, and it costs nothing, because **shared code that touches the world
+is already a helper** — that's what `retry_call` is. Core is where a percentile
+calculation, a duration grammar, a record coercion lives. So core is tier 0/1 (§9): pure
+computation, at most reading a path it was handed. No network, no subprocess, no dynamic
+execution, no secrets.
+
+The last one enforces itself, for free. `secrets_store._calling_helper()` walks out to the
+first frame whose module isn't the store's own and requires it to be a `codeact_helper_*`
+module; a `codeact_core_*` frame asking for a secret is denied today, with no new code.
+Worth writing down as intended rather than leaving it as a happy accident someone later
+"fixes".
+
+### Core has no contract of its own
+
+A helper's documentation is trustworthy because its examples are executed and their real
+output captured (§5). Core has no examples, because it has no card. So what stops core
+rotting?
+
+Its dependents. **Core is verified through the helpers that use it**, and that's the
+honest description of its status rather than a gap in it: core has no external contract,
+so there's nothing to verify except the behaviour its callers depend on — which is exactly
+what their captured examples pin. A core change with no dependent example covering it is
+uncovered, and the review app can say so out loud, because it knows the graph.
+
+This is also why core needs no approval ceremony of its own. Approving a core change means
+re-capturing every dependent's examples; the diff a human reads is the source, the list of
+dependents, and what those dependents now print. If nothing printed differently, the change
+was safe in the only sense the system can check.
+
+### The closure hash
+
+This is the mechanic the whole section rests on.
+
+Quarantine fires today when a helper file's `source_hash` stops matching the hash recorded
+in its sidecar at capture time — "the source changed since its examples were last verified"
+(§6). With an edge, editing core changes *no helper file*, so every dependent's card
+silently becomes unverified while continuing to claim it was checked. That's the exact
+failure the quarantine mechanism exists to prevent, arriving through the back door.
+
+So the sidecar records a **closure hash** instead: the helper's own source plus the source
+of every core module and helper it imports, transitively, hashed in name order.
+
+```
+  edit core/records.py
+       │
+       ├──► closure hash of read_jsonl  changes ──► read_jsonl  quarantined
+       ├──► closure hash of write_jsonl changes ──► write_jsonl quarantined
+       └──► codeact check --capture
+                 ├─ examples produce what the cards documented ──► sidecars re-stamped,
+                 │                                                 quarantine lifted
+                 └─ anything differs ─────────────────────────────► stays quarantined,
+                                                                    and that is the
+                                                                    regression report
+```
+
+One cheap property worth keeping: the hash is over sorted `(name, source)` pairs, so it's
+stable across load order and across a dependency being reached by two paths.
+
+### Composition: a helper calling a helper
+
+An edge between two helpers is declared — `@helper(..., uses=["read_jsonl", "group_by"])` —
+and **verified against the AST**, both directions. Called but not declared is hidden reach.
+Declared but not called is a stale card. The gate reports both; the AST pass is the check,
+and the declaration is the artifact a human reviews.
+
+**Effect closure is the rule that matters most.** A helper's effective reach is its own
+declared effects plus the effects of everything it uses, transitively; the gate checks the
+*effective* value against the job, and the card shows where it came from:
+
+```
+job: transform | domains: data | side effects: network (via fetch_url)
+```
+
+Without that, composition is a laundering path for reach: wrap `fetch_url` in a function
+declaring `side_effects="none"`, and the pure/world-touching boundary the job table exists
+to hold is gone — quietly, because the wrapper's own body contains nothing suspicious. A
+`transform` that calls an `acquire` is not a transform, and the gate should say so in those
+words.
+
+**The capability delta has to compare closures too.** `_capability_delta` currently diffs
+declared sets, so a revision whose entire change is one added line — `uses=["gh_pr_fetch"]`
+— would gain network access and a secret while reporting `escalates: false`. That is
+precisely the edit §6 calls the most dangerous in the system, arriving in the one form the
+existing check can't see. Effective sets, or the check is decorative.
+
+**Delegation runs under the callee's approval, not the caller's.** If A uses B and B
+declared `GITHUB_TOKEN`, the store's frame walk finds B's module and allows the read —
+correctly. A never sees the value, and can only invoke B's published contract, which is
+exactly what it could have done by calling B directly. The approved pairing was
+`(GITHUB_TOKEN, B)` and it stays `(GITHUB_TOKEN, B)`.
+
+**Cycles are refused** at the gate, naming the path, rather than left to surface as an
+import error from inside somebody's example run.
+
+**No depth limit.** The constraint that matters is visibility, not depth — a reviewer
+approving a helper is approving everything it can reach, so the card and the review screen
+show the full transitive closure and the trial run reports it as its own line rather than
+burying it in file reads. A rule capping depth at two would be arbitrary and would push
+authors into flattening by copy-paste, which is the thing this section exists to stop.
+
+**Quarantine does not cascade**, and this is worth stating because the instinct is that it
+should. Quarantine means *this card's documented behaviour may be false*. A dependent
+doesn't read that card; it calls the code. Its own captured examples are what verify it,
+and if those still pass it is exactly as trustworthy as it was yesterday. Cards are for
+readers, code is for callers — and the code half is already covered by the closure hash,
+which fires on a source change whether or not anybody quarantined anything. The review app
+should still mark "depends on a quarantined helper", because it's a strong hint about where
+to look next. It is not itself a defect.
+
+### Composability at the call site
+
+The other half of "functions should be composable" isn't about the library's internal graph
+at all. It's whether the agent can chain two helpers without writing glue between them —
+a constraint on *signatures*, which today holds implicitly and undocumented: `read_jsonl`
+returns `list[dict]`, `group_by` and `diff_records` consume `list[dict]`,
+`to_markdown_table` consumes `list[dict]` and returns `str`. They compose because they
+happen to agree on a record shape nobody wrote down.
+
+Write it down. The job axis already implies the order; the shapes are what travel along it:
+
+```
+   outside                                                                     reading
+      │                                                                            ▲
+   acquire ──text/bytes──► parse ──records──► transform ──records──► present ──text┘
+      │                      │                   │  │
+      │                      └───────────────────┤  └──► generate ──artifact──► mutate ──► outside
+      │                                          ▼
+      └────────────────────────────────────► inspect ──scalar/report──► reading
+                                            (answers, changes nothing)
+
+   orchestrate ── wraps any span of the above, and inherits whatever it wraps
+```
+
+The shape vocabulary is small and closed for the same reason the job vocabulary is:
+`path`, `text`, `records`, `record`, `mapping`, `table`, `tree`, `scalar`, `any`. And it's
+**derived from the type annotations rather than declared** — `list[dict]` is `records`,
+`str | Path` is `path` — with a declaration available only as an override, because a third
+hand-written taxonomy is a third thing to get wrong.
+
+Two things fall out, and only one is new machinery. The gate gains a free composition
+warning: a `transform` that consumes `records` and produces something outside the lattice
+should explain itself in review. And retrieval gains a genuinely strong signal —
+`search_helpers(task=..., have="records", want="table")`. Domain failed as a hard filter
+(§14, question 5) because it was a judgement call the model had to guess right; shape is
+derived from code, so it doesn't have that failure mode. It still earns its way up the same
+ladder: ranking boost first, hard filter only if the retrieval eval says it can be.
+
+### Compositions accumulate as `orchestrate` helpers
+
+This answers question 7 below by deleting the subsystem it asks for. A recurring path —
+"for this job, run `a()` then `b()` then `c()`" — that's worth keeping is a function whose
+body is those three calls. Give it a card and `uses=["a", "b", "c"]` and it is an
+`orchestrate` helper, indistinguishable from one written by hand: same gate, same captured
+examples, same effect closure (`inherits` already exists for exactly this), same review, same
+retrieval path. No recipe object, no recipe store, no second thing to search.
+
+What the miner gains is a second cluster type. It fingerprints inline code today (§6); a
+repeated *sequence of helper calls* is visible in the same corpus blocks and is the
+strongest candidate signal available, because every step is already a reviewed unit. The
+only open question about such a cluster is whether the sequence deserves a name.
+
+### What changes, by file
+
+| where | today | with the edge |
+|---|---|---|
+| `registry.py` | loads each file standalone; a sibling import fails and the helper vanishes into `errors`, which only the CLI prints | core and helper directories on the import path; an import failure becomes a named broken entry that `describe_helper` can answer with, not silence |
+| `registry.py` sidecar | `source_hash` of one file | `closure_hash` over the file plus every source it transitively imports |
+| `helper.py` | `job`, `domains`, `side_effects`, `requires_secrets` | `+ uses=[...]` |
+| `cards.py` `validate` | job vs. own side effects | job vs. **effective** side effects; card renders `network (via fetch_url)` and the `uses` closure |
+| `cards.py` `build` | signature as text | `+ consumes`/`produces` derived from annotations |
+| `proposals.py` `_capability_delta` | diffs declared sets | diffs effective closures, or adding a dependency is an invisible privilege increase |
+| `proposals.py` gate | one file, one helper | `+ uses` vs. AST both directions, cycle refusal, core-purity check |
+| `trial.py` | loads the candidate alone in a scratch dir | resolves its dependencies, and reports `depends on:` as a first-class line rather than as incidental file reads |
+| `secrets_store.py` | caller must be `codeact_helper_*` | unchanged — and that's the point: core can't ask, delegation runs under the callee |
+| `search.py` | job filter + BM25 + domain boost | `+ shape` boost |
+| `miner.py` removal queue | "nothing has called it" | helper-to-helper calls count as calls, or every shared helper looks dead and gets retired out from under its callers |
+| `miner.py` candidates | clusters of inline code | `+ clusters of repeated call sequences` → `orchestrate` proposals |
+
+### What it costs
+
+Three honest ones.
+
+**The library stops being a set of independent files.** Today every helper is trivially
+separable: one file, `git revert` it and the world is consistent. With edges, reverting one
+file can leave a dependent calling something that no longer exists. The closure hash turns
+that from a silent breakage into a quarantine, which is the best available outcome and
+still strictly worse than the property being given up.
+
+**Review gains a graph.** Approving a leaf helper means reading one file. Approving one
+three edges deep means reading one file and trusting a closure that is displayed but not
+re-read. That's the same trust move as any dependency in any package manager, and it is
+genuinely weaker than what the design has today. Displaying the closure prominently is a
+mitigation, not a fix.
+
+**Core is a place for things to hide.** No card, not searchable, read only by whoever is
+editing a dependent. Purity by rule and dependent-example review are the mitigations, but
+the real one is size: core should be dozens of lines, not thousands. If core grows a
+subsystem, that subsystem wanted to be a helper.
+
+### Ordering
+
+1. **Import path + broken entries made visible.** No new concepts; fixes a silent failure
+   that already exists.
+2. **Closure hash and the quarantine it drives.** Before any edge can be created, so the
+   first one is verified from the moment it exists — the same reason corpus logging shipped
+   in phase 1 ahead of anything that read it.
+3. **The core layer**: directory, `codeact.core` resolution, purity check.
+4. **`uses=`**: AST verification, effect closure, closure-aware capability delta.
+5. **Shapes**: derived, rendered on the card, ranking signal, then the retrieval eval.
+6. **Miner sequence clusters** — last, because it needs a corpus in which composed helpers
+   have been getting called.
+
+---
+
+## 13. Suggested build order
 
 | Phase | Ships | Why here |
 |---|---|---|
@@ -879,8 +1146,9 @@ from a single execution.
 | 3 ✅ | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 ✅ | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
 | 5 ✅ | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
+| 6 | **the dependency edge** (§12): closure hash, the core layer, `uses=` with effect closure, shapes, sequence mining | the library has to be big enough for duplication between helpers to be a real cost before paying the price of coupling them |
 
-**All five phases are implemented**, and layer 2 has a real answer: **`run_as` runs the
+**Phases 1–5 are implemented**, and layer 2 has a real answer: **`run_as` runs the
 interpreter as a separate OS user**, which is enforced by the kernel rather than by an
 AST walk. Two facts shaped it, both measured rather than assumed. An unprivileged parent
 cannot use `subprocess(user=)` at all — it raises `PermissionError` without `CAP_SETUID`
@@ -911,7 +1179,7 @@ trial run of unreviewed code is the least safe thing in the system (§11).
 
 ---
 
-## 13. Open questions
+## 14. Open questions
 
 1. **How often should the miner run, and does it need a budget?** Batch review is now the
    default surface (§6 track 2 lands there), which settles the friction question, but not
@@ -920,8 +1188,13 @@ trial run of unreviewed code is the least safe thing in the system (§11).
    per run — and a rule for what happens to clusters that keep getting deferred.
 2. **Seed library.** Ship with a starter set (file/AST/HTTP/git utilities) so discovery
    has something to find on day one, or stay empty so everything is earned?
-3. **Helper granularity.** One file per helper is maximally reviewable but awkward for
-   helpers that want to share private state. Allow modules of related helpers?
+3. **Helper granularity.** ~~One file per helper is maximally reviewable but awkward for
+   helpers that want to share private state. Allow modules of related helpers?~~
+   **Answered in §12**, and not by allowing multi-helper modules — sharing goes to a
+   separate `core` layer that has no cards and is never discoverable, because the thing
+   that made this awkward was one file being both the unit of review and the unit of
+   sharing. Split those and both get simple. What remains open is empirical: whether core
+   stays as small as it has to be to remain reviewable.
 4. **Where exactly do the tier boundaries fall?** Settled that the agent authors freely
    under sign-off (§9), but tier 0's stdlib list and the tier 1/2 line are guesses until
    audit mode produces real data. Specifically unresolved: is `subprocess` tier 2 when
@@ -943,10 +1216,14 @@ trial run of unreviewed code is the least safe thing in the system (§11).
    name sprawl: `parse_log`, `parse_log2`, `parse_log_structured` accumulating because
    every real improvement was technically breaking. If that shows up, the removal queue is
    the pressure valve, but it may need to be more aggressive than "unused for months."
-7. **Should compositions accumulate too?** Individual helpers are the unit now, but the
+7. **Should compositions accumulate too?** ~~Individual helpers are the unit now, but the
    recurring thing is often a *sequence* — "for this job, the path is `a()` then `b()`
    then `c()`". Capturing those as recipes is a natural extension of the same flywheel,
-   and probably a phase 5+ question rather than something to design in now.
+   and probably a phase 5+ question rather than something to design in now.~~ **Answered
+   in §12: yes, and as nothing new.** A recipe worth keeping is an `orchestrate` helper
+   whose body is those three calls — same gate, same card, same retrieval. The recipe
+   object was the wrong shape for the idea; what's real is a new *mining* cluster type,
+   over repeated call sequences rather than repeated inline code.
 8. **How do secrets get in?** `codeact secret set`, import from the environment, keyring
    passthrough — and what happens when a helper declares a secret that isn't set yet. The
    card should probably surface it as an unmet precondition rather than failing at call
