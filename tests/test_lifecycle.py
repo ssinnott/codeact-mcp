@@ -250,7 +250,7 @@ class TestSecrets(Case):
     def test_unknown_secret_is_a_keyerror_naming_the_command(self):
         with self.assertRaises(KeyError) as ctx:
             secrets_store.get("NOPE", registry_names={__name__})
-        self.assertIn("tools/secret.py", str(ctx.exception))
+        self.assertIn("secret set NOPE", str(ctx.exception))
 
     def test_store_file_is_owner_only(self):
         secrets_store.put("TOKEN", "value-goes-here")

@@ -44,17 +44,31 @@ virtualenv, and nothing to build.
 | `session_state` | List every bound name with its type and a short summary |
 | `restart_session` | Discard the interpreter and start fresh |
 
-And four commands for you, not the agent:
+And one command for you, not the agent — `./codeact`, in this directory:
 
 ```
-python3 tools/review.py     # approve or reject proposals in a browser
-python3 tools/mine.py       # what the corpus suggests the library is missing
-python3 tools/secret.py     # manage secrets helpers may use
-python3 tools/check.py      # validate helpers, capture example output
+codeact                 what the library and its policies look like right now
+codeact review          approve or reject proposals in a browser
+codeact mine            what the corpus suggests the library is missing
+codeact check           validate helpers, capture example output
+codeact card <name>     print a card exactly as the agent sees it
+codeact policy          which shell commands route through CodeAct
+codeact secret          manage secrets helpers may use
+codeact sandbox         run the interpreter as a separate OS user
+```
+
+Nothing there is reachable from a session, which is the point: approving a helper,
+holding a secret, and deciding what may touch a real cluster are decisions the agent
+must not be able to make for itself. It's pure standard library, so put it on your
+PATH or alias it:
+
+```
+alias codeact='python3 /path/to/codeact-mcp/codeact'
 ```
 
 Plus a `codeact` skill that teaches the working loop and fires on multi-step data, file,
-parsing, and API tasks.
+parsing, and API tasks, and a `Bash` hook — off by default — that routes commands you
+name into CodeAct instead of the shell.
 
 ### The namespace delta
 
@@ -137,9 +151,9 @@ detects drift, and a helper whose source changed since its examples were verifie
 wrong is worse than no helper at all.
 
 ```
-python3 tools/check.py --capture     # validate, run examples, record output
-python3 tools/describe.py <name>     # print a card exactly as the agent sees it
-python3 tools/describe.py --index    # the job index and the whole catalog
+codeact check --capture     # validate, run examples, record output
+codeact card <name>         # print a card exactly as the agent sees it
+codeact card --index        # the job index and the whole catalog
 ```
 
 ## How the library grows
@@ -149,7 +163,7 @@ records a pending proposal and runs the whole gate, so your review is spent on j
 rather than on catching missing type hints. You approve in the browser:
 
 ```
-python3 tools/review.py
+codeact review
 ```
 
 Each candidate shows its card, its source, its declared reach, and a **trial run**. The
@@ -164,7 +178,7 @@ quietly gaining reach looks identical whether the cause is malice or a confused 
 
 ### Mining
 
-`python3 tools/mine.py` reads the corpus and produces four queues. New candidates are the
+`codeact mine` reads the corpus and produces four queues. New candidates are the
 obvious one. The valuable one is **retrieval failures**: inline code that re-implements a
 helper you already have, which means the library was fine and *discovery* broke. Those are
 two different problems with two different fixes, and they are otherwise indistinguishable.
@@ -201,6 +215,69 @@ invitation to propose something.
 > otherwise would be worse than saying so. For a boundary the kernel actually enforces,
 > see `run_as` below.
 
+## Keeping commands out of Bash
+
+`kubectl` is two tools wearing one name. Against a local cluster it's an everyday
+development tool and blocking it would be pure friction; against a real one it's a
+production console with no undo. The difference isn't in the command — it's in which
+cluster the config file happens to be pointing at, which no `Bash(kubectl:*)` permission
+rule can see.
+
+So a `PreToolUse` hook decides on the **target**, not the verb:
+
+| | Bash | CodeAct |
+|---|---|---|
+| local cluster (`minikube`, `kind-*`, `docker-desktop`, …) | anything | anything |
+| everywhere else | nothing | reads only |
+
+```json
+// ~/.codeact/config.json
+{"commands": {"mode": "enforce", "rules": ["kubectl", "helm"]}}
+```
+
+```
+codeact policy enforce                    # off | audit | ask | enforce
+codeact policy check 'kubectl get pods'   # decide, without running it
+codeact policy block terraform            # Bash-block anything else
+codeact policy log                        # what it has seen
+```
+
+**It ships off**, like the guard did — `audit` records without blocking, `ask` sends
+each one to you, `enforce` refuses. A refusal names the way through:
+
+```
+BLOCKED — `kubectl` here targets `prod-eks`, which is not a local cluster.
+
+Bash may target local clusters only (minikube, docker-desktop, kind-*, …). Anything
+else goes through CodeAct, where reads are allowed and writes are not:
+  1. search_helpers(task="…what you need to read…", job="inspect") — then call it
+     from run_python.
+  2. propose_helper(...) if nothing fits. Package the read you need; a helper that
+     changes state somewhere real will not be approved.
+
+If you meant the local cluster, switch to it first — `kubectl config use-context
+<local>` — or name it inline with `--context`.
+```
+
+The read-only half is enforced too, not just described: the interpreter refuses to spawn
+a mutating command unless the argv names a local context. It decides lexically rather
+than resolving the current context, because resolving it would mean spawning `kubectl`
+from inside the hook that fires on spawning — so in code the target has to be explicit,
+which is a good habit anyway.
+
+Everything unknown counts as production: an unresolvable context, a command bringing its
+own `--kubeconfig`, an unrecognized verb, a command line that doesn't parse. A false
+positive costs one `--context` flag.
+
+Commands with no notion of a target work too — `codeact policy block terraform` keeps it
+out of Bash and leaves CodeAct to helper review, since a helper only runs because someone
+read it.
+
+> Same disclaimer as the guard: **policy, not a security boundary.** It understands
+> pipelines, `sudo`, `env`, `xargs` and `sh -c`, and fails closed on what it can't parse,
+> but a shell is an interpreter and code that means to hide a command from it can. It
+> keeps an honest agent out of production; it does not contain a dishonest one.
+
 ## Running as a separate user
 
 By default the interpreter runs as you, the same as `Bash` does. Point it at another
@@ -208,7 +285,7 @@ account and the containment stops being a matter of policy:
 
 ```
 sudo useradd --system --no-create-home codeact-runner
-python3 tools/sandbox.py codeact-runner     # checks it, and prints the sudoers line
+codeact sandbox codeact-runner              # checks it, and prints the sudoers line
 ```
 
 ```json
@@ -226,7 +303,7 @@ persists across calls, and a timeout still sends `SIGINT` and preserves the name
 
 An unprivileged process cannot drop to another user by itself — `subprocess(user=)`
 needs `CAP_SETUID` — so this goes through `sudo` and needs a `NOPASSWD` rule scoped to
-exactly one interpreter and one target user. `tools/sandbox.py` prints the line. If the
+exactly one interpreter and one target user. `codeact sandbox` prints the line. If the
 rule is missing, **the interpreter refuses to start** rather than quietly running with
 your full privileges; someone who set `run_as` believes they are isolated.
 
@@ -249,7 +326,7 @@ inside an HTTP library will happily print the auth header it was called with, an
 path bypasses the wrapper entirely.
 
 ```
-python3 tools/secret.py set GITHUB_TOKEN
+codeact secret set GITHUB_TOKEN
 ```
 
 > Stored under filesystem permissions only (0600). The standard library ships no cipher,
@@ -268,7 +345,14 @@ It stays local, is gitignored, and credential-shaped strings are redacted before
 ```
 python3 tests/run.py          # stdlib unittest, no dependencies
 claude plugin validate .
+codeact eval cards            # can a helper be used from its card alone?
+codeact eval retrieval        # does task-driven discovery find the right one?
 ```
+
+The CLI is `codeact` at the repo root — a shim over `server/codeact_mcp/cli/`, one
+module per command group. A new human surface is a `register(subparsers)` function and
+one line in `MODULES`; it shares the registry, the gate and the config with the MCP
+server rather than reimplementing any of them.
 
 ## Licence
 

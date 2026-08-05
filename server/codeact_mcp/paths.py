@@ -12,6 +12,16 @@ def root() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".codeact"
 
 
+def cli() -> Path:
+    """The `codeact` CLI shipped alongside the server.
+
+    Spelled out in full wherever a message suggests running it: the plugin
+    installs under a hashed directory, so `codeact secret set X` is only
+    actionable for someone who has already aliased it.
+    """
+    return Path(__file__).resolve().parents[2] / "codeact"
+
+
 def helpers_dir() -> Path:
     return root() / "helpers"
 

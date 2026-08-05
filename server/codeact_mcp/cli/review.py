@@ -1,33 +1,41 @@
-#!/usr/bin/env python3
 """The review app: approve or reject pending helpers in a browser.
 
-    python3 tools/review.py
-
-Starts a local server on 127.0.0.1 with a random token in the URL and prints the
-link. Deliberately a separate process from the MCP server — reviewing is your
-activity, it should not need an active Claude session, and the MCP server is
-stdio-bound and per-session anyway.
+Starts a local server on 127.0.0.1 with a random token in the URL and prints
+the link. Deliberately a separate process from the MCP server — reviewing is
+your activity, it should not need an active Claude session, and the MCP server
+is stdio-bound and per-session anyway.
 
 Stdlib only, one HTML file, no build step.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import secrets
-import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
-
-from codeact_mcp import miner, proposals, registry, trial  # noqa: E402
+from .. import miner, proposals, registry, trial
 
 TOKEN = secrets.token_urlsafe(24)
 PAGE = (Path(__file__).parent / "review.html").read_text()
+
+
+def register(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "review", help="approve or reject proposals in a browser"
+    )
+    parser.add_argument(
+        "--port", type=int, default=0, help="fixed port; default is whatever is free"
+    )
+    parser.add_argument(
+        "--no-open", action="store_true", help="print the URL instead of opening it"
+    )
+    parser.set_defaults(handler=run)
 
 
 def state() -> dict:
@@ -132,17 +140,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(b"not found", "text/plain", 404)
 
 
-def main() -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+def run(args: argparse.Namespace) -> int:
+    server = ThreadingHTTPServer(("127.0.0.1", getattr(args, "port", 0) or 0), Handler)
     url = f"http://127.0.0.1:{server.server_port}/?t={TOKEN}"
     print(f"codeact review  →  {url}\nCtrl-C to stop.")
-    threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    if not getattr(args, "no_open", False):
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

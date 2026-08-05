@@ -1,22 +1,21 @@
-#!/usr/bin/env python3
-"""Mine the corpus for helper candidates and library problems.
+"""`codeact mine` — what the corpus says the library is missing.
 
-    python3 tools/mine.py
-
-Runs out of the hot path by design — mining during a session would compete with
+Runs out of the hot path by design: mining during a session would compete with
 the task for exactly the attention the task needs. Nothing here changes the
 library; it produces queues for a human to look at.
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 import textwrap
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+from .. import miner, registry
 
-from codeact_mcp import miner, registry  # noqa: E402
+
+def register(subparsers) -> None:
+    parser = subparsers.add_parser("mine", help="what the corpus says is missing")
+    parser.set_defaults(handler=run)
 
 
 def block(code: str, width: int = 76) -> str:
@@ -25,7 +24,7 @@ def block(code: str, width: int = 76) -> str:
     return "\n".join("    " + line for line in out)
 
 
-def main() -> int:
+def run(_args: argparse.Namespace) -> int:
     reg = registry.Registry().load()
     q = miner.queues(reg)
 
@@ -65,9 +64,5 @@ def main() -> int:
 
     print(f"\n== never used ({len(q['removals'])}) ==")
     print("  " + (", ".join(q["removals"]) if q["removals"] else "none"))
-    print("\nReview and act on these with `python3 tools/review.py`.")
+    print("\nReview and act on these with `codeact review`.")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
