@@ -45,12 +45,16 @@ codeact-mcp/                        # this repo = the plugin
 ├── hooks/hooks.json                # PreToolUse(Bash) → the command policy
 ├── hooks/command_policy.py         # decides, using server/codeact_mcp/commands.py
 ├── codeact                         # the human CLI — one command, no dependencies
+├── server/codeact/                 # the import surface helper files see
+│   ├── __init__.py                 # `from codeact import helper`
+│   └── helpers.py                  # `from codeact.helpers import group_by` (§12)
 └── server/codeact_mcp/             # the MCP server (Python, stdio)
     ├── server.py         # MCP tool surface
     ├── protocol.py       # hand-rolled JSON-RPC, so there are no dependencies
     ├── interpreter.py    # session manager, timeouts, restarts
     ├── worker.py         # the interpreter subprocess
-    ├── registry.py       # helper storage, load, preload into namespace
+    ├── registry.py       # helper storage, load, quarantine, preload into namespace
+    ├── linkage.py        # edge resolution and the closure hash (§12)
     ├── cards.py          # parse, validate and render usage contracts
     ├── contract.py       # run examples, capture output, detect drift
     ├── proposals.py      # the gate, and the only path from proposed to callable
@@ -1161,9 +1165,9 @@ subsystem, that subsystem wanted to be a helper.
 
 ### Ordering
 
-1. **Import path + broken entries made visible.** No new concepts; fixes a silent failure
+1. ✅ **Import path + broken entries made visible.** No new concepts; fixes a silent failure
    that already exists.
-2. **Closure hash and the quarantine it drives.** Before any edge can be created, so the
+2. ✅ **Closure hash and the quarantine it drives.** Before any edge can be created, so the
    first one is verified from the moment it exists — the same reason corpus logging shipped
    in phase 1 ahead of anything that read it.
 3. **The core layer**: directory, `codeact.core` resolution, purity check.
@@ -1171,6 +1175,21 @@ subsystem, that subsystem wanted to be a helper.
 5. **Shapes**: derived, rendered on the card, ranking signal, then the retrieval eval.
 6. **Miner sequence clusters** — last, because it needs a corpus in which composed helpers
    have been getting called.
+
+**Steps 1–2 are implemented.** `linkage.py` holds both halves: `codeact.helpers` resolves a
+name against the user's library first and the seeds second, and the closure hash goes into
+the sidecar beside the file's own hash — both, so a quarantine can say *which* of "you
+edited this" and "something under it moved" happened. A file that fails to load is now a
+named `Broken` entry, so `describe_helper` answers "it exists and is broken, here is why"
+where it used to answer "no such helper". Both readings come from the AST, never from
+importing the file, since the file in question may be the broken one.
+
+One consequence of this ordering is worth stating plainly rather than discovering: between
+step 1 and step 4 an edge can exist that nothing verifies. A helper may import another
+helper without declaring it, so its effective reach is not yet what the gate checks —
+exactly the laundering path §12 opens with. What holds until step 4 is that the edge is a
+greppable line in a source diff a human approves, which is weaker than the check that
+replaces it.
 
 ---
 
@@ -1183,9 +1202,10 @@ subsystem, that subsystem wanted to be a helper.
 | 3 ✅ | `propose_helper` (incl. `revises`), validation gate, **revision flow + quarantine**, **review app v1** (card, source, diffs, approve/deny, run examples in a scratch dir), **guard enforcement on** | the actual twist — and enforcement only makes sense once there's a way to say yes to what it blocks |
 | 4 ✅ | layer 2 containment (Landlock + seccomp), capability grants, **secrets** (store, wrappers, egress redaction), dependency install | the real boundary; trial runs and network helpers both become safe here, so this gates anything that touches credentials |
 | 5 ✅ | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
-| 6 | **the dependency edge** (§12): closure hash, the core layer, `uses=` with effect closure, shapes, sequence mining | the library has to be big enough for duplication between helpers to be a real cost before paying the price of coupling them |
+| 6 ◐ | **the dependency edge** (§12): closure hash, the core layer, `uses=` with effect closure, shapes, sequence mining | the library has to be big enough for duplication between helpers to be a real cost before paying the price of coupling them |
 
-**Phases 1–5 are implemented**, and layer 2 has a real answer: **`run_as` runs the
+**Phases 1–5 are implemented**, and phase 6 is under way — its first two steps, the import
+path and the closure hash, are in (§12 Ordering). Layer 2 has a real answer: **`run_as` runs the
 interpreter as a separate OS user**, which is enforced by the kernel rather than by an
 AST walk. Two facts shaped it, both measured rather than assumed. An unprivileged parent
 cannot use `subprocess(user=)` at all — it raises `PermissionError` without `CAP_SETUID`

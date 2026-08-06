@@ -22,19 +22,19 @@
       {
         "code": "python_symbols(str(_broken))",
         "note": "genuinely unparsable source raises rather than returning a partial list",
-        "output": "File \"/tmp/tmppfzw3sos/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
+        "output": "File \"/tmp/tmp1s2qtz53/broken.py\", line 1\n    def oops(:\n             ^\nSyntaxError: invalid syntax",
         "ok": true
       },
       {
         "code": "python_symbols(str(_missing))",
         "note": "a path with no file at it raises rather than returning an empty list",
-        "output": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmppfzw3sos/not_here.py'",
+        "output": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmp1s2qtz53/not_here.py'",
         "ok": true
       },
       {
         "code": "python_symbols(str(_dir))",
         "note": "a directory is not a source file, so a wrong path is loud on POSIX",
-        "output": "IsADirectoryError: [Errno 21] Is a directory: '/tmp/tmppfzw3sos'",
+        "output": "IsADirectoryError: [Errno 21] Is a directory: '/tmp/tmp1s2qtz53'",
         "ok": true
       },
       {
@@ -45,5 +45,6 @@
       }
     ]
   },
-  "source_hash": "3a1a86d8f664b516"
+  "source_hash": "3a1a86d8f664b516",
+  "closure_hash": "44dafd6f127b171e"
 }

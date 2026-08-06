@@ -39,7 +39,12 @@ class Helpers:
 
     def card(self, name: str) -> str:
         entry = self._registry.get(name)
-        return entry.card.render() if entry else f"no helper named {name!r}"
+        if entry is not None:
+            return entry.card.render()
+        reason = self._registry.broken_reason(name)
+        if reason:
+            return f"{name} failed to load, so it is not callable: {reason}"
+        return f"no helper named {name!r}"
 
     def by_job(self, job: str) -> str:
         return self.search(job=job)

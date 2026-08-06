@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from codeact_mcp import contract, registry  # noqa: E402
+from codeact_mcp import contract, linkage, paths, registry  # noqa: E402
 
 GOOD = '''
 """A helper for tests."""
@@ -52,11 +52,11 @@ class RegistryCase(unittest.TestCase):
         os.environ["CODEACT_HOME"] = str(home)
         # Point the builtin seed directory at a temp one too, so these tests
         # assert on the loader rather than on whatever the library ships.
-        self._prev_seeds = registry.SEEDS_DIR
-        registry.SEEDS_DIR = self.seeds
+        self._prev_seeds = paths.SEEDS
+        paths.SEEDS = self.seeds
 
     def tearDown(self):
-        registry.SEEDS_DIR = self._prev_seeds
+        paths.SEEDS = self._prev_seeds
         if self._prev is None:
             os.environ.pop("CODEACT_HOME", None)
         else:
@@ -336,6 +336,215 @@ class TestSidecar(RegistryCase):
         registry.write_sidecar(path, [])
         payload = json.loads(path.with_suffix(".json").read_text())
         self.assertEqual(payload["source_hash"], registry.source_hash(path.read_text()))
+
+
+DEPENDENT = '''
+"""A helper that leans on another one."""
+from __future__ import annotations
+from codeact import helper
+from codeact.helpers import shout
+
+@helper(job="transform", domains=["data"], examples=[{"code": "announce('hi')"}])
+def announce(text: str) -> str:
+    """Turn a string into a heading, shouted and punctuated.
+
+    Use when: opening a report section.
+    Don't use when: the text is a sentence.
+    Args:
+        text: any string
+    Returns:
+        the same string upper-cased with a trailing exclamation mark
+    """
+    return shout(text) + "!"
+'''
+
+BANNER = '''
+"""A helper two edges above the bottom of the chain."""
+from __future__ import annotations
+from codeact import helper
+from codeact.helpers import announce
+
+@helper(job="transform", domains=["data"], examples=[{"code": "banner('hi')"}])
+def banner(text: str) -> str:
+    """Mark a heading so a section is easy to find when scanning.
+
+    Use when: printing a report with several sections.
+    Don't use when: the output is machine-read.
+    Args:
+        text: any string
+    Returns:
+        the heading with a leading marker
+    """
+    return "== " + announce(text)
+'''
+
+DIAMOND = BANNER.replace(
+    "from codeact.helpers import announce",
+    "from codeact.helpers import announce\nfrom codeact.helpers import shout",
+).replace('"== " + announce(text)', '"== " + announce(shout(text))')
+
+
+class TestEdges(RegistryCase):
+    """§12: a helper may now import another helper, through one name."""
+
+    def test_a_helper_can_import_another_helper(self):
+        write(self.helpers, "shout", GOOD)
+        write(self.helpers, "announce", DEPENDENT)
+        entry = self.load().get("announce")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.fn("hi"), "HI!")
+
+    def test_the_imported_helper_is_not_registered_twice(self):
+        write(self.helpers, "shout", GOOD)
+        write(self.helpers, "announce", DEPENDENT)
+        reg = self.load()
+        self.assertEqual(reg.get("shout").path.name, "shout.py")
+        self.assertEqual(reg.errors, [])
+
+    def test_an_edge_resolves_to_the_user_copy_over_the_seed(self):
+        write(self.seeds, "shout", GOOD)
+        write(self.helpers, "shout", GOOD.replace("text.upper()", "text.title()"))
+        write(self.helpers, "announce", DEPENDENT)
+        self.assertEqual(self.load().get("announce").fn("hi there"), "Hi There!")
+
+    def test_an_edge_reaches_a_helper_not_named_after_its_file(self):
+        write(self.helpers, "pair", TWO)
+        write(self.helpers, "loud", DEPENDENT.replace("shout", "up"))
+        self.assertEqual(self.load().get("announce").fn("hi"), "HI!")
+
+    def test_a_quarantined_dependency_is_still_callable(self):
+        # Quarantine means this card's documented behaviour may be false. A
+        # caller does not read the card, and its own examples verify it.
+        path = write(self.helpers, "shout", GOOD)
+        registry.write_sidecar(path, [], helper="shout", quarantine="examples fail")
+        write(self.helpers, "announce", DEPENDENT)
+        reg = self.load()
+        self.assertTrue(reg.get("shout").quarantined)
+        self.assertFalse(reg.get("announce").quarantined)
+        self.assertEqual(reg.get("announce").fn("hi"), "HI!")
+
+    def test_an_unresolvable_edge_names_the_helper_it_wanted(self):
+        write(self.helpers, "announce", DEPENDENT)
+        reg = self.load()
+        self.assertIn("announce", reg.broken)
+        self.assertIn("no helper named 'shout'", reg.broken_reason("announce"))
+
+    def test_a_cycle_is_refused_by_name_not_by_stack_overflow(self):
+        write(self.helpers, "shout", GOOD.replace(
+            "from codeact import helper",
+            "from codeact import helper\nfrom codeact.helpers import announce",
+        ))
+        write(self.helpers, "announce", DEPENDENT)
+        reason = self.load().broken_reason("announce")
+        self.assertIn("cycle", reason)
+
+
+class TestBrokenEntries(RegistryCase):
+    """§12: a load failure is a named entry, not silence."""
+
+    def test_a_broken_file_names_the_helpers_it_meant_to_define(self):
+        write(self.helpers, "pair", TWO + "\nimport nonexistent_module_xyz\n")
+        reg = self.load()
+        self.assertEqual(sorted(reg.broken), ["down", "up"])
+        self.assertIn("nonexistent_module_xyz", reg.broken_reason("up"))
+
+    def test_a_file_that_does_not_parse_still_reports_the_error(self):
+        write(self.helpers, "broken", "this is not python(")
+        reg = self.load()
+        self.assertEqual(reg.broken, {})  # nothing parseable to name
+        self.assertTrue(any("broken" in e for e in reg.errors))
+
+    def test_a_working_helper_reports_no_reason(self):
+        write(self.helpers, "shout", GOOD)
+        self.assertEqual(self.load().broken_reason("shout"), "")
+
+    def test_a_working_user_copy_hides_a_broken_seed(self):
+        write(self.seeds, "shout", GOOD + "\nimport nonexistent_module_xyz\n")
+        write(self.helpers, "shout", GOOD)
+        reg = self.load()
+        self.assertEqual(reg.broken_reason("shout"), "")
+        self.assertEqual(reg.get("shout").fn("hi"), "HI")
+
+    def test_broken_helpers_are_not_callable(self):
+        write(self.helpers, "shout", GOOD + "\nimport nonexistent_module_xyz\n")
+        reg = self.load()
+        self.assertNotIn("shout", reg.namespace())
+        self.assertIsNone(reg.get("shout"))
+
+
+class TestClosure(RegistryCase):
+    """§12: the closure hash, and the quarantine it drives."""
+
+    def dependent_pair(self):
+        dep = write(self.helpers, "shout", GOOD)
+        path = write(self.helpers, "announce", DEPENDENT)
+        registry.write_sidecar(
+            path, [{"code": "announce('hi')", "output": "'HI!'", "ok": True}], helper="announce"
+        )
+        self.assertFalse(self.load().get("announce").quarantined)
+        return dep, path
+
+    def test_the_sidecar_records_the_closure_it_was_captured_from(self):
+        _, path = self.dependent_pair()
+        payload = json.loads(path.with_suffix(".json").read_text())
+        self.assertEqual(payload["closure_hash"], linkage.closure_hash(path))
+
+    def test_editing_a_dependency_quarantines_the_dependent(self):
+        dep, _ = self.dependent_pair()
+        dep.write_text(dep.read_text().replace("text.upper()", "text.lower()"))
+        entry = self.load().get("announce")
+        self.assertTrue(entry.quarantined)
+        self.assertIn("code it depends on changed", entry.card.quarantine)
+
+    def test_editing_the_helper_itself_still_says_source_changed(self):
+        _, path = self.dependent_pair()
+        path.write_text(path.read_text().replace('+ "!"', '+ "?"'))
+        self.assertIn("source changed", self.load().get("announce").card.quarantine)
+
+    def test_recapturing_lifts_a_dependency_quarantine(self):
+        dep, path = self.dependent_pair()
+        dep.write_text(dep.read_text().replace("text.upper()", "text.lower()"))
+        self.assertTrue(self.load().get("announce").quarantined)
+        registry.write_sidecar(
+            path, [{"code": "announce('hi')", "output": "'hi!'", "ok": True}], helper="announce"
+        )
+        self.assertFalse(self.load().get("announce").quarantined)
+
+    def test_a_legacy_sidecar_verifies_against_its_own_source(self):
+        # Written before edges existed, so its helper could not depend on
+        # anything: its own source is its whole closure.
+        path = write(self.helpers, "shout", GOOD)
+        path.with_suffix(".json").write_text(json.dumps({
+            "helpers": {"shout": [{"code": "shout('hi')", "output": "'HI'", "ok": True}]},
+            "source_hash": registry.source_hash(path.read_text()),
+        }))
+        self.assertFalse(self.load().get("shout").quarantined)
+        path.write_text(path.read_text().replace("text.upper()", "text.lower()"))
+        self.assertIn("source changed", self.load().get("shout").card.quarantine)
+
+    def test_the_hash_covers_the_whole_chain_not_just_one_hop(self):
+        dep = write(self.helpers, "shout", GOOD)
+        write(self.helpers, "announce", DEPENDENT)
+        top = write(self.helpers, "banner", BANNER)
+        before = linkage.closure_hash(top)
+        dep.write_text(dep.read_text().replace("text.upper()", "text.lower()"))
+        self.assertNotEqual(before, linkage.closure_hash(top))
+
+    def test_a_dependency_reached_by_two_paths_is_named_once(self):
+        write(self.helpers, "shout", GOOD)
+        write(self.helpers, "announce", DEPENDENT)
+        top = write(self.helpers, "banner", DIAMOND)
+        names = [name for name, _ in linkage.closure(top)]
+        self.assertEqual(names, sorted(names))  # stable across load order
+        self.assertEqual(
+            names, ["helpers/announce", "helpers/banner", "helpers/shout"]
+        )
+
+    def test_a_missing_dependency_still_hashes(self):
+        path = write(self.helpers, "announce", DEPENDENT)
+        before = linkage.closure_hash(path)
+        write(self.helpers, "shout", GOOD)
+        self.assertNotEqual(before, linkage.closure_hash(path))
 
 
 if __name__ == "__main__":

@@ -66,12 +66,12 @@ class Case(unittest.TestCase):
         self._env = {k: os.environ.get(k) for k in ("CODEACT_HOME", "CODEACT_SECRETS")}
         os.environ["CODEACT_HOME"] = str(home)
         os.environ["CODEACT_SECRETS"] = str(home / "secrets.json")
-        self._seeds_dir = registry.SEEDS_DIR
-        registry.SEEDS_DIR = self.seeds
+        self._seeds_dir = paths.SEEDS
+        paths.SEEDS = self.seeds
         registry.registry(reload=True)
 
     def tearDown(self):
-        registry.SEEDS_DIR = self._seeds_dir
+        paths.SEEDS = self._seeds_dir
         for key, value in self._env.items():
             if value is None:
                 os.environ.pop(key, None)

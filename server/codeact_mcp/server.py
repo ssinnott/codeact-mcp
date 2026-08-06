@@ -291,6 +291,14 @@ def build() -> Server:
         reg = registry()
         entry = reg.get(name)
         if entry is None:
+            reason = reg.broken_reason(name)
+            if reason:
+                return (
+                    f"{name} is in the library but its file failed to load, so it is "
+                    f"not callable:\n  {reason}\n"
+                    "That is a defect in the library, not in your call. Write the code "
+                    "inline for now and say what you hit."
+                )
             close = [n for n in reg.namespace() if name.lower() in n.lower()]
             hint = f" Did you mean: {', '.join(sorted(close))}?" if close else ""
             return f"No helper named {name!r}.{hint} Use search_helpers to look."

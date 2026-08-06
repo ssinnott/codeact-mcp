@@ -26,6 +26,16 @@ def helpers_dir() -> Path:
     return root() / "helpers"
 
 
+# Helpers shipped with the plugin, so discovery has something to find on day
+# one. A module attribute rather than a constant read at import time: the tests
+# point it at a temp tree to assert on the loader rather than on what ships.
+SEEDS = Path(__file__).resolve().parents[2] / "seeds"
+
+
+def seeds_dir() -> Path:
+    return SEEDS
+
+
 def proposals_dir() -> Path:
     return root() / "proposals"
 

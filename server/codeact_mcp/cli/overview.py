@@ -45,8 +45,10 @@ def run(_args: argparse.Namespace) -> int:
     detail = f"{len(entries)} helper(s)"
     if quarantined:
         detail += f", {len(quarantined)} quarantined ({', '.join(e.name for e in quarantined)})"
+    broken = [name for name in sorted(reg.broken) if reg.broken_reason(name)]
     if reg.errors:
-        detail += f", {len(reg.errors)} failed to load"
+        named = f" ({', '.join(broken)})" if broken else ""
+        detail += f", {len(reg.errors)} failed to load{named}"
     _line("helpers", detail + "   `codeact card --index`")
 
     if pending:

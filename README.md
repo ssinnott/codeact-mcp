@@ -128,6 +128,10 @@ def read_jsonl(path: str, *, skip_blank: bool = True) -> list[dict]:
     """
 ```
 
+A helper may lean on another one — `from codeact.helpers import group_by` — resolved
+against your library first and the shipped seeds second. Declaring those edges so the gate
+can check the reach they add is still to come (DESIGN.md §12).
+
 Every helper declares exactly one **job** — `acquire`, `parse`, `transform`, `inspect`,
 `present`, `generate`, `mutate`, `orchestrate` — plus one to three **domains**. The
 vocabulary is closed on purpose; free-form tags rot within a few dozen entries. The two
@@ -149,7 +153,12 @@ documented behaviour is observed rather than asserted — which rules out a hall
 example in a document the agent fully trusts and cannot check. Re-running them later
 detects drift, and a helper whose source changed since its examples were verified is
 **quarantined**: hidden from search and not preloaded, because documentation known to be
-wrong is worse than no helper at all.
+wrong is worse than no helper at all. Verification covers everything a helper imports, not
+only its own file — editing a dependency changes no helper file at all, so without that
+every dependent would go on claiming it had been checked.
+
+A helper whose file won't load is reported by name rather than vanishing: `describe_helper`
+answers with the import error, and `codeact card --index` lists it as broken.
 
 ```
 codeact check --capture     # validate, run examples, record output
