@@ -34,16 +34,17 @@
       {
         "code": "find_files(_root, include=[os.path.join(_root, 'src', '*.py')])",
         "note": "patterns are matched against root-relative paths, so an absolute pattern is an error rather than a silent empty result",
-        "output": "ValueError: include pattern '/tmp/tmpbvccpuc1/src/*.py' is absolute, and patterns are matched against paths relative to root \u2014 it would never match. Drop the root prefix: pass 'src/*.py', not '/home/me/proj/src/*.py'.",
+        "output": "ValueError: include pattern '/tmp/tmpev817yx8/src/*.py' is absolute, and patterns are matched against paths relative to root \u2014 it would never match. Drop the root prefix: pass 'src/*.py', not '/home/me/proj/src/*.py'.",
         "ok": true
       },
       {
         "code": "find_files(os.path.join(_root, 'does-not-exist'))",
         "note": "a missing root is an error, not an empty list",
-        "output": "FileNotFoundError: no such directory: /tmp/tmpbvccpuc1/does-not-exist",
+        "output": "FileNotFoundError: no such directory: /tmp/tmpev817yx8/does-not-exist",
         "ok": true
       }
     ]
   },
-  "source_hash": "8b757bbfed03e6b5"
+  "source_hash": "8b757bbfed03e6b5",
+  "closure_hash": "d7b668e03cee549c"
 }

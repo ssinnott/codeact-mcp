@@ -5,7 +5,7 @@ something to find on day one) and helpers in the user's library at
 `~/.codeact/helpers`. The user's library wins on a name collision.
 
 Each helper is `<name>.py` (authored) plus an optional `<name>.json` sidecar
-(generated: captured example output, and the source hash it was captured from).
+(generated: captured example output, and the hashes it was captured from).
 Keeping generated artifacts out of the authored file is what makes the diff a
 human reviews contain only what a human wrote.
 """
@@ -13,18 +13,23 @@ human reviews contain only what a human wrote.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from . import cards, paths
+from . import cards, linkage, paths
 from .cards import Card
 from .helper import meta_of
 
-SEEDS_DIR = Path(__file__).resolve().parents[2] / "seeds"
+_SOURCE_CHANGED = (
+    "the source changed since its examples were last verified, so the "
+    "documented behaviour may no longer be true"
+)
+_DEPENDENCY_CHANGED = (
+    "code it depends on changed since its examples were last verified, so the "
+    "documented behaviour may no longer be true"
+)
 
 
 def source_hash(text: str) -> str:
@@ -47,14 +52,20 @@ class Entry:
         return bool(self.card.quarantine)
 
 
-def _load_module(path: Path):
-    spec = importlib.util.spec_from_file_location(f"codeact_helper_{path.stem}", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+@dataclass
+class Broken:
+    """A helper that exists on disk but whose file would not load.
+
+    Named, and kept, because "no such helper" and "that helper is broken" are
+    different facts and only the second one tells the agent what to do about it
+    (§12). Before this the reason was printed by the CLI and nowhere else, so
+    from a session the helper had simply never existed.
+    """
+
+    name: str
+    path: Path
+    builtin: bool
+    reason: str
 
 
 def _sidecar(path: Path) -> dict:
@@ -82,6 +93,10 @@ def write_sidecar(path: Path, captured: list[dict], helper: str = "", **extra) -
     payload = {
         "helpers": helpers,
         "source_hash": source_hash(path.read_text()),
+        # Both, and not one: the closure decides whether the examples still
+        # hold, and the file's own hash is what tells a stale helper from one
+        # whose dependency moved under it.
+        "closure_hash": linkage.closure_hash(path),
         **extra,
     }
     side.write_text(json.dumps(payload, indent=2) + "\n")
@@ -95,20 +110,35 @@ def _captured_for(side: dict, name: str) -> list[dict]:
     return side.get("captured") or []
 
 
+def _staleness(path: Path, text: str, side: dict) -> str:
+    """Whether the captured examples still describe the code that runs.
+
+    The closure hash covers the file plus every source it imports, transitively,
+    so editing a dependency quarantines its dependents even though no helper
+    file changed (§12) — and the two reasons are told apart, because "you edited
+    this" and "something under it moved" send a reviewer to different places.
+
+    A sidecar written before edges existed records only `source_hash`. A helper
+    from that era could not depend on anything, so its own source *is* its whole
+    closure and comparing that stays exactly right.
+    """
+    own_changed = side.get("source_hash") != source_hash(text)
+    recorded = side.get("closure_hash")
+    if recorded is None:
+        return _SOURCE_CHANGED if own_changed else ""
+    if recorded == linkage.closure_hash(path):
+        return ""
+    return _SOURCE_CHANGED if own_changed else _DEPENDENCY_CHANGED
+
+
 def _load_file(path: Path, builtin: bool) -> Iterator[Entry]:
-    module = _load_module(path)
+    module = linkage.load_module(path)
     side = _sidecar(path)
     text = path.read_text()
 
     quarantine = ""
     if side:
-        if side.get("source_hash") != source_hash(text):
-            quarantine = (
-                "the source changed since its examples were last verified, so the "
-                "documented behaviour may no longer be true"
-            )
-        elif side.get("quarantine"):
-            quarantine = side["quarantine"]
+        quarantine = _staleness(path, text, side) or side.get("quarantine", "")
 
     for value in vars(module).values():
         if not callable(value) or meta_of(value) is None:
@@ -123,13 +153,15 @@ def _load_file(path: Path, builtin: bool) -> Iterator[Entry]:
 class Registry:
     def __init__(self) -> None:
         self.entries: dict[str, Entry] = {}
+        self.broken: dict[str, Broken] = {}
         self.errors: list[str] = []
 
     def load(self) -> "Registry":
         self.entries.clear()
+        self.broken.clear()
         self.errors.clear()
         # User helpers load second so they shadow same-named seeds.
-        for directory, builtin in ((SEEDS_DIR, True), (paths.helpers_dir(), False)):
+        for directory, builtin in ((paths.seeds_dir(), True), (paths.helpers_dir(), False)):
             if not directory.is_dir():
                 continue
             for path in sorted(directory.glob("*.py")):
@@ -149,7 +181,13 @@ class Registry:
                             )
                         self.entries[entry.name] = entry
                 except Exception as exc:
-                    self.errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+                    reason = f"{type(exc).__name__}: {exc}"
+                    self.errors.append(f"{path.name}: {reason}")
+                    # Read the names out of the AST, since the file itself would
+                    # not run. A file that does not even parse names nothing,
+                    # and only the error above is left to report it.
+                    for name in linkage.declared_helpers(path):
+                        self.broken[name] = Broken(name, path, builtin, reason)
         return self
 
     # -- views ------------------------------------------------------------
@@ -164,6 +202,18 @@ class Registry:
 
     def get(self, name: str) -> Entry | None:
         return self.entries.get(name)
+
+    def broken_reason(self, name: str) -> str:
+        """Why a name that exists on disk isn't callable, if that's the case.
+
+        Resolved at lookup rather than at load, so a working user helper
+        shadowing a broken seed of the same name reports nothing: the name
+        answers, and which file it came from is the CLI's business.
+        """
+        entry = self.broken.get(name)
+        if entry is None or name in self.entries:
+            return ""
+        return f"{entry.path.name}: {entry.reason}"
 
     def counts_by_job(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -180,9 +230,14 @@ _stamp: tuple | None = None
 
 
 def _dir_stamp() -> tuple:
-    """Cheap fingerprint of the helper directories."""
+    """Cheap fingerprint of the helper directories.
+
+    An edited dependency lands here too, since a helper's dependencies are
+    themselves files in these directories — which is what makes a quarantine
+    triggered by a closure change show up without a restart.
+    """
     marks = []
-    for directory in (SEEDS_DIR, paths.helpers_dir()):
+    for directory in (paths.seeds_dir(), paths.helpers_dir()):
         try:
             marks.append(
                 tuple(sorted((p.name, p.stat().st_mtime_ns) for p in directory.glob("*.py")))

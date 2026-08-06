@@ -74,7 +74,8 @@ def run_check(args: argparse.Namespace) -> int:
         wanted = set(args.names)
         missing = wanted - {e.name for e in entries}
         for name in sorted(missing):
-            print(f"FAIL  {name}: no such helper")
+            reason = reg.broken_reason(name)
+            print(f"FAIL  {name}: " + (f"failed to load: {reason}" if reason else "no such helper"))
         entries = [e for e in entries if e.name in wanted]
         if missing:
             return 1
@@ -100,11 +101,20 @@ def run_card(args: argparse.Namespace) -> int:
         print("\nHelpers:")
         for entry in sorted(reg.available(), key=lambda e: e.name):
             print(f"  {entry.card.index_line()}")
+        broken = [name for name in sorted(reg.broken) if reg.broken_reason(name)]
+        if broken:
+            print("\nBroken (on disk, not callable — `codeact check` for the reason):")
+            for name in broken:
+                print(f"  {name} — {reg.broken_reason(name)}")
         return 0
 
     entry = reg.get(args.name)
     if entry is None:
-        print(f"no helper named {args.name!r}", file=sys.stderr)
+        reason = reg.broken_reason(args.name)
+        detail = f"{args.name} failed to load: {reason}" if reason else (
+            f"no helper named {args.name!r}"
+        )
+        print(detail, file=sys.stderr)
         return 1
     print(entry.card.render())
     return 0

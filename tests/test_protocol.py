@@ -198,6 +198,25 @@ class TestProtocol(unittest.TestCase):
         self.assertIn("No helper named", out)
         self.assertIn("read_jsonl", out)  # substring hint
 
+    def test_describe_names_a_helper_that_failed_to_load(self):
+        # Silence is the §12 failure: a helper that exists on disk but will not
+        # import was indistinguishable from one that never existed, and only
+        # the CLI could say which. The two call for different reactions.
+        target = Path(__file__).resolve().parent / ".tmp-home" / "helpers" / "wrecked.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "from codeact import helper\n"
+            "import nonexistent_module_xyz\n\n"
+            "@helper(job='transform', domains=['text'], examples=[{'code': 'wrecked(1)'}])\n"
+            "def wrecked(x: int) -> int:\n"
+            '    """Double a number."""\n'
+            "    return x * 2\n"
+        )
+        self.addCleanup(target.unlink)
+        out = self.c.tool("describe_helper", name="wrecked")
+        self.assertIn("failed to load", out)
+        self.assertIn("nonexistent_module_xyz", out)
+
     def test_helpers_are_preloaded_into_the_interpreter(self):
         out = self.c.tool("run_python", code="callable(read_jsonl)")
         self.assertIn("True", out)
