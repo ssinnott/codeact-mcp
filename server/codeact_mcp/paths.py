@@ -60,7 +60,7 @@ def traces_dir() -> Path:
     return root() / "traces"
 
 
-IGNORED = ("corpus.jsonl", "fingerprints.db", "*.log", "traces/")
+IGNORED = ("corpus.jsonl", "fingerprints.db", "*.log", "traces/", "mining.json")
 
 
 def ensure() -> Path:

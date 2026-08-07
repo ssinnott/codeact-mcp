@@ -165,6 +165,50 @@ def _overlap(a: frozenset, b: frozenset) -> float:
     return len(a & b) / len(a | b)
 
 
+def call_sequence(tree: ast.AST, names: set) -> tuple[str, ...]:
+    """The helper calls in a block, in execution order — the recurring *path*
+    through the library, which is a different signal from any block's shape.
+
+    Execution order, not source order: `trim(shout(x))` runs shout first, and
+    it has to match the same path written as two statements or composition
+    styles would split one habit into two clusters. A call is emitted after
+    its arguments, which is when it actually happens. Immediate repeats are
+    collapsed — a loop calling one helper five times is one step, not five.
+    """
+    ordered: list[str] = []
+
+    class _Calls(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            self.visit(node.func)
+            for arg in node.args:
+                self.visit(arg)
+            for keyword in node.keywords:
+                self.visit(keyword)
+            if isinstance(node.func, ast.Name) and node.func.id in names:
+                ordered.append(node.func.id)
+
+    _Calls().visit(tree)
+    return tuple(n for i, n in enumerate(ordered) if i == 0 or n != ordered[i - 1])
+
+
+def helper_sequences(reg) -> dict:
+    """Each helper's own call path through the library, for recognising a
+    block that re-walks a path some helper already packages."""
+    out: dict = {}
+    names = set(reg.entries)
+    for entry in reg.entries.values():
+        try:
+            tree = ast.parse(entry.path.read_text())
+        except (OSError, SyntaxError):
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry.name:
+                seq = call_sequence(node, names - {entry.name})
+                if len(seq) >= 2:
+                    out[seq] = entry.name
+    return out
+
+
 def read_corpus(limit: int = 50000) -> list[dict]:
     path = paths.corpus_path()
     if not path.exists():
@@ -263,12 +307,15 @@ def usage(reg, cached: bool = True) -> dict[str, dict]:
 
 
 def queues(reg, min_sessions: int = MIN_SESSIONS) -> dict[str, Any]:
-    """The four review queues."""
+    """The five review queues."""
     records = read_corpus()
     known, signatures = helper_fingerprints(reg)
+    packaged = helper_sequences(reg)
+    helper_names = set(reg.entries)
 
     clusters: dict[str, Cluster] = {}
     retrieval_failures: dict[str, Cluster] = {}
+    seq_clusters: dict[tuple, Cluster] = {}
 
     for record in records:
         code = record.get("code") or ""
@@ -278,6 +325,33 @@ def queues(reg, min_sessions: int = MIN_SESSIONS) -> dict[str, Any]:
             tree = ast.parse(code)
         except SyntaxError:
             continue
+
+        # The second cluster type (§12): a repeated sequence of helper calls.
+        # Every step is already a reviewed unit, which makes this the
+        # strongest candidate signal available — the only open question about
+        # such a cluster is whether the path deserves a name. Extracted before
+        # the size cutoff below, because three calls of glue is exactly the
+        # block the fingerprint is right to ignore and this queue exists for.
+        seq = call_sequence(tree, helper_names)
+        if len(seq) >= 2:
+            cluster = seq_clusters.get(seq)
+            if cluster is None:
+                cluster = seq_clusters[seq] = Cluster(
+                    digest="seq:" + "→".join(seq), code=code, size=len(seq)
+                )
+                # A path some helper already walks is a retrieval failure in
+                # sequence form: the composition exists, discovery missed it.
+                cluster.helper = packaged.get(seq, "")
+            cluster.count += 1
+            cluster.sessions.add(record.get("session"))
+            cluster.projects.add(record.get("project") or "")
+            if record.get("outcome") in ("error", "timeout"):
+                cluster.failures += 1
+            # And not also a shape candidate: both queues would be describing
+            # the same block for the same decision, and the sequence — whose
+            # every step is already a reviewed unit — is the sharper half.
+            continue
+
         digest, size = fingerprint_tree(tree)
         if not digest:
             continue
@@ -310,6 +384,16 @@ def queues(reg, min_sessions: int = MIN_SESSIONS) -> dict[str, Any]:
         c for c in clusters.values() if len(c.sessions) >= min_sessions
     ]
     candidates.sort(key=lambda c: -c.score())
+
+    sequences = [
+        c for seq, c in seq_clusters.items()
+        if len(c.sessions) >= min_sessions and not c.helper
+    ]
+    sequences.sort(key=lambda c: -c.score())
+    seq_failures = [
+        c for c in seq_clusters.values()
+        if len(c.sessions) >= min_sessions and c.helper
+    ]
 
     stats = usage(reg)
     revisions = [
@@ -348,11 +432,109 @@ def queues(reg, min_sessions: int = MIN_SESSIONS) -> dict[str, Any]:
 
     return {
         "candidates": [c.as_json() for c in candidates[:25]],
+        "sequences": [
+            {**c.as_json(), "chain": c.digest.removeprefix("seq:").split("→")}
+            for c in sequences[:25]
+        ],
         "retrieval_failures": [
             {**c.as_json(), "helper": c.helper}
-            for c in sorted(retrieval_failures.values(), key=lambda c: -c.count)[:25]
+            for c in sorted(
+                [*retrieval_failures.values(), *seq_failures], key=lambda c: -c.count
+            )[:25]
         ],
         "revisions": revisions[:25],
         "removals": sorted(removals)[:25],
         "corpus_size": len(records),
     }
+
+
+# -- the budget, and the deferral rule ------------------------------------
+#
+# Open question 1, answered in two halves. The synthesis pass downstream of a
+# mine costs human attention (and model calls) proportional to cluster count,
+# so a run is capped. And a cluster a human has seen several times and not
+# acted on has been answered, just not in writing — it is parked until its
+# evidence grows beyond what it had when last shown, at which point the case
+# for it is genuinely new and it earns a fresh hearing.
+
+
+def _ledger_path():
+    return paths.root() / "mining.json"
+
+
+def read_ledger() -> dict:
+    try:
+        data = json.loads(_ledger_path().read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_ledger(data: dict) -> None:
+    try:
+        paths.ensure()
+        _ledger_path().write_text(json.dumps(data, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def budgeted(
+    q: dict, budget: int | None = None, defer_after: int | None = None, remember: bool = False
+) -> dict:
+    """Apply the per-run budget and the deferral rule to a queues() result.
+
+    `remember=True` records what was actually shown, so only a real surfacing
+    counts against a cluster — the review app browsing the same queues passes
+    False and burns nothing. A budget of 0 means uncapped. Over-budget items
+    are not parked, merely deferred to the next run: nobody has seen them, so
+    nothing about them has been decided.
+    """
+    from . import config
+
+    settings = config.get("mine") or {}
+    if budget is None:
+        budget = int(settings.get("budget") or 0)
+    if defer_after is None:
+        defer_after = int(settings.get("defer_after") or 3)
+
+    ledger = read_ledger()
+    current = {item["digest"] for key in ("candidates", "sequences") for item in q.get(key) or []}
+
+    parked = 0
+    for key in ("candidates", "sequences"):
+        kept = []
+        for item in q.get(key) or []:
+            entry = ledger.get(item["digest"])
+            grown = entry is None or (
+                item["count"] > entry.get("count", 0)
+                or item["sessions"] > entry.get("sessions", 0)
+            )
+            if entry is not None and entry.get("surfaced", 0) >= defer_after and not grown:
+                parked += 1
+                continue
+            kept.append(item)
+        q[key] = kept
+
+    if budget > 0:
+        pool = sorted(
+            ((item["score"], key, item["digest"]) for key in ("candidates", "sequences") for item in q[key]),
+            key=lambda t: -t[0],
+        )
+        keep = {(key, digest) for _, key, digest in pool[:budget]}
+        for key in ("candidates", "sequences"):
+            q[key] = [item for item in q[key] if (key, item["digest"]) in keep]
+
+    if remember:
+        ledger = {k: v for k, v in ledger.items() if k in current}
+        for key in ("candidates", "sequences"):
+            for item in q[key]:
+                entry = ledger.setdefault(item["digest"], {"surfaced": 0})
+                if item["count"] > entry.get("count", 0) or item["sessions"] > entry.get("sessions", 0):
+                    entry["surfaced"] = 0  # new evidence restarts the clock
+                entry["surfaced"] = entry.get("surfaced", 0) + 1
+                entry["count"] = item["count"]
+                entry["sessions"] = item["sessions"]
+        write_ledger(ledger)
+
+    q["parked"] = parked
+    return q

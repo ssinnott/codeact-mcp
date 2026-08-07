@@ -32,6 +32,11 @@ DEFAULTS: dict[str, Any] = {
     # different uid is enforced by the kernel. Null means "same user as Claude
     # Code", which is what Bash already grants.
     "run_as": None,
+    # `codeact mine`: how many clusters one run may surface (0 = uncapped), and
+    # how many times a cluster is shown without action before it is parked
+    # until its evidence grows. Attention is the budgeted resource — a queue
+    # that repeats itself every run is a queue nobody reads.
+    "mine": {"budget": 10, "defer_after": 3},
     # Shell commands routed through CodeAct instead of Bash — see §9, layer 0.
     # Ships off: these rules are a template, and blocking a command someone
     # relies on without being asked is worse than blocking nothing. Flip the

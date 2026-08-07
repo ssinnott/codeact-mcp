@@ -696,6 +696,64 @@ class TestMiner(Case):
         # And it must NOT be offered as a new candidate — that is the whole point.
         self.assertEqual(q["candidates"], [])
 
+    def test_a_helper_used_only_by_another_helper_is_not_removable(self):
+        # Helper-to-helper calls count as calls: retiring a shared helper out
+        # from under its callers is the one wrong answer the removal queue
+        # could give.
+        (self.home / "helpers" / "fetch_thing.py").write_text(FETCHER)
+        (self.home / "helpers" / "wrap.py").write_text(WRAPPER)
+        q = miner.queues(registry.Registry().load())
+        self.assertNotIn("fetch_thing", q["removals"])
+        self.assertIn("wrap", q["removals"])  # nothing calls the top of the chain
+
+    def test_a_repeated_call_sequence_is_its_own_cluster(self):
+        (self.seeds / "shout.py").write_text(GOOD.replace("slugify", "shout"))
+        (self.seeds / "trim.py").write_text(GOOD.replace("slugify", "trim"))
+        reg = registry.Registry().load()
+        code = "x = shout(t)\ny = trim(x)"
+        self.corpus([
+            {"code": code, "session": "s1", "project": "/p", "outcome": "ok"},
+            {"code": code, "session": "s2", "project": "/q", "outcome": "ok"},
+        ])
+        q = miner.queues(reg)
+        self.assertEqual(len(q["sequences"]), 1)
+        self.assertEqual(q["sequences"][0]["chain"], ["shout", "trim"])
+        # Too small for the shape fingerprint, deliberately: two lines of
+        # glue is exactly what the sequence queue exists to see.
+        self.assertEqual(q["candidates"], [])
+
+    def test_a_sequence_in_one_session_is_not_a_cluster(self):
+        (self.seeds / "shout.py").write_text(GOOD.replace("slugify", "shout"))
+        (self.seeds / "trim.py").write_text(GOOD.replace("slugify", "trim"))
+        reg = registry.Registry().load()
+        code = "x = shout(t)\ny = trim(x)"
+        self.corpus([
+            {"code": code, "session": "s1", "project": "/p", "outcome": "ok"},
+            {"code": code, "session": "s1", "project": "/p", "outcome": "ok"},
+        ])
+        self.assertEqual(miner.queues(reg)["sequences"], [])
+
+    def test_a_path_some_helper_already_walks_is_a_retrieval_failure(self):
+        (self.seeds / "shout.py").write_text(GOOD.replace("slugify", "shout"))
+        (self.seeds / "trim.py").write_text(GOOD.replace("slugify", "trim"))
+        packaged = GOOD.replace("slugify", "both").replace(
+            "from codeact import helper",
+            "from codeact import helper\nfrom codeact.helpers import shout\nfrom codeact.helpers import trim",
+        ).replace(
+            "return sep.join(w.lower() for w in words)",
+            "return trim(shout(sep.join(words)))",
+        )
+        (self.seeds / "both.py").write_text(packaged)
+        reg = registry.Registry().load()
+        code = "a = shout(t)\nb = trim(a)\nprint(b)"
+        self.corpus([
+            {"code": code, "session": "s1", "project": "/p", "outcome": "ok"},
+            {"code": code, "session": "s2", "project": "/p", "outcome": "ok"},
+        ])
+        q = miner.queues(reg)
+        self.assertEqual(q["sequences"], [])
+        self.assertIn("both", [c.get("helper") for c in q["retrieval_failures"]])
+
     def test_usage_counts_calls_and_failures(self):
         (self.seeds / "shout.py").write_text(GOOD.replace("slugify", "shout"))
         reg = registry.Registry().load()
@@ -706,6 +764,71 @@ class TestMiner(Case):
         stats = miner.usage(reg, cached=False)["shout"]
         self.assertEqual((stats["calls"], stats["failures"]), (2, 1))
         self.assertEqual(len(stats["projects"]), 2)
+
+
+class TestMinerBudget(Case):
+    """Open question 1: a run is capped, and a cluster shown several times
+    without action is parked until its evidence grows."""
+
+    def item(self, digest, score=5.0, count=2, sessions=2):
+        return {"digest": digest, "score": score, "count": count, "sessions": sessions}
+
+    def q(self, candidates=(), sequences=()):
+        return {"candidates": list(candidates), "sequences": list(sequences)}
+
+    def test_the_budget_keeps_the_best_across_both_queues(self):
+        out = miner.budgeted(
+            self.q(
+                candidates=[self.item("a", 9.0), self.item("b", 1.0)],
+                sequences=[self.item("c", 5.0)],
+            ),
+            budget=2,
+        )
+        self.assertEqual([i["digest"] for i in out["candidates"]], ["a"])
+        self.assertEqual([i["digest"] for i in out["sequences"]], ["c"])
+
+    def test_a_budget_of_zero_is_uncapped(self):
+        out = miner.budgeted(
+            self.q(candidates=[self.item(d) for d in "abcdef"]), budget=0
+        )
+        self.assertEqual(len(out["candidates"]), 6)
+
+    def test_a_cluster_shown_thrice_without_action_is_parked(self):
+        for _ in range(3):
+            shown = miner.budgeted(self.q(candidates=[self.item("a")]), budget=0, remember=True)
+            self.assertEqual(len(shown["candidates"]), 1)
+        out = miner.budgeted(self.q(candidates=[self.item("a")]), budget=0, remember=True)
+        self.assertEqual(out["candidates"], [])
+        self.assertEqual(out["parked"], 1)
+
+    def test_new_evidence_gives_a_parked_cluster_a_fresh_hearing(self):
+        for _ in range(4):
+            miner.budgeted(self.q(candidates=[self.item("a")]), budget=0, remember=True)
+        grown = self.item("a", count=7)
+        out = miner.budgeted(self.q(candidates=[grown]), budget=0, remember=True)
+        self.assertEqual(len(out["candidates"]), 1)
+        # And the clock restarted: it takes defer_after more showings to park.
+        out = miner.budgeted(self.q(candidates=[self.item("a", count=7)]), budget=0, remember=True)
+        self.assertEqual(len(out["candidates"]), 1)
+
+    def test_browsing_burns_no_showings(self):
+        # The review app reads the same queues; only a real mine records one.
+        for _ in range(5):
+            out = miner.budgeted(self.q(candidates=[self.item("a")]), budget=0, remember=False)
+            self.assertEqual(len(out["candidates"]), 1)
+        self.assertEqual(out["parked"], 0)
+
+    def test_over_budget_is_deferred_not_parked(self):
+        # Nobody saw the item, so nothing about it was decided: it must not
+        # accumulate showings while waiting its turn.
+        for _ in range(4):
+            miner.budgeted(
+                self.q(candidates=[self.item("a", 9.0), self.item("b", 1.0)]),
+                budget=1,
+                remember=True,
+            )
+        out = miner.budgeted(self.q(candidates=[self.item("b", 1.0)]), budget=1, remember=True)
+        self.assertEqual([i["digest"] for i in out["candidates"]], ["b"])
 
 
 class TestTrialRun(Case):

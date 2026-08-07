@@ -51,7 +51,9 @@ def state() -> dict:
         if p.problems and not (p.dismissed or p.reason)
     ]
     reg = registry.registry(reload=True)
-    queues = miner.queues(reg)
+    # The same budgeted view a mine shows, without recording a showing:
+    # browsing the app is not the same act as asking for a fresh batch.
+    queues = miner.budgeted(miner.queues(reg), remember=False)
     return {
         "pending": [_proposal_json(p) for p in pending],
         "failed": [_proposal_json(p) for p in rejected],
