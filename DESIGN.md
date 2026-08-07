@@ -41,13 +41,14 @@ codeact-mcp/                        # this repo = the plugin
 ├── .mcp.json                       # bundled server, launched via ${CLAUDE_PLUGIN_ROOT}
 ├── skills/codeact/SKILL.md         # teaches the loop, discovery, and when to propose
 ├── seeds/<name>.py                 # helpers shipped with the plugin, read-only
-├── seeds/core/<name>.py            # shared pure code helpers may import (§12, unbuilt)
+├── seeds/core/<name>.py            # shared pure code helpers may import (§12)
 ├── hooks/hooks.json                # PreToolUse(Bash) → the command policy
 ├── hooks/command_policy.py         # decides, using server/codeact_mcp/commands.py
 ├── codeact                         # the human CLI — one command, no dependencies
 ├── server/codeact/                 # the import surface helper files see
 │   ├── __init__.py                 # `from codeact import helper`
-│   └── helpers.py                  # `from codeact.helpers import group_by` (§12)
+│   ├── helpers.py                  # `from codeact.helpers import group_by` (§12)
+│   └── core.py                     # `from codeact.core import records` (§12)
 └── server/codeact_mcp/             # the MCP server (Python, stdio)
     ├── server.py         # MCP tool surface
     ├── protocol.py       # hand-rolled JSON-RPC, so there are no dependencies
@@ -94,7 +95,7 @@ project either. **One library per machine, in the home directory:**
 ```
 ~/.codeact/                  # a local git repo — free history, diff, blame, revert
 ├── helpers/<name>.py        # code + its card, one file each — tracked
-├── core/<name>.py           # shared pure code, no cards, not discoverable (§12, unbuilt)
+├── core/<name>.py           # shared pure code, no cards, not discoverable (§12)
 ├── proposals/<id>.json      # pending, awaiting human approval — tracked
 ├── corpus.jsonl             # every executed block + outcome, all projects — gitignored
 ├── commands.log             # what the command policy saw and decided — gitignored
@@ -843,6 +844,14 @@ I'd ship layers 1–3 first because they're cheap and cover accident, and treat 
 as the hardening step for anything genuinely sensitive. Worth being explicit in the README
 about which mode is on, the same as with the sandbox tiers.
 
+What is in today is the *delegation* broker `run_as` needs, not the signing proxy: the
+store is 0600 and owned by the human, so the worker's local read misses and it asks the
+server over the protocol pipe. The server answers only for secrets some approved helper
+declared — the worker cannot be trusted to say which helper is asking, so the server
+enforces the half it owns — and every request lands in the transcript, served or not.
+The plaintext still enters the worker process, which is exactly why the signing proxy
+remains the strong version.
+
 ### Storage and audit
 
 Encrypted at rest with an AEAD, keyed from the OS keyring where one exists — encryption,
@@ -1170,13 +1179,13 @@ subsystem, that subsystem wanted to be a helper.
 2. ✅ **Closure hash and the quarantine it drives.** Before any edge can be created, so the
    first one is verified from the moment it exists — the same reason corpus logging shipped
    in phase 1 ahead of anything that read it.
-3. **The core layer**: directory, `codeact.core` resolution, purity check.
-4. **`uses=`**: AST verification, effect closure, closure-aware capability delta.
+3. ✅ **The core layer**: directory, `codeact.core` resolution, purity check.
+4. ✅ **`uses=`**: AST verification, effect closure, closure-aware capability delta.
 5. **Shapes**: derived, rendered on the card, ranking signal, then the retrieval eval.
-6. **Miner sequence clusters** — last, because it needs a corpus in which composed helpers
-   have been getting called.
+6. ✅ **Miner sequence clusters** — after `uses=`, because a sequence cluster's output
+   is an `orchestrate` helper whose edges the gate has to be able to check.
 
-**Steps 1–2 are implemented.** `linkage.py` holds both halves: `codeact.helpers` resolves a
+**Everything but shapes is implemented.** Steps 1–2 first: `linkage.py` holds both halves: `codeact.helpers` resolves a
 name against the user's library first and the seeds second, and the closure hash goes into
 the sidecar beside the file's own hash — both, so a quarantine can say *which* of "you
 edited this" and "something under it moved" happened. A file that fails to load is now a
@@ -1184,12 +1193,14 @@ named `Broken` entry, so `describe_helper` answers "it exists and is broken, her
 where it used to answer "no such helper". Both readings come from the AST, never from
 importing the file, since the file in question may be the broken one.
 
-One consequence of this ordering is worth stating plainly rather than discovering: between
-step 1 and step 4 an edge can exist that nothing verifies. A helper may import another
-helper without declaring it, so its effective reach is not yet what the gate checks —
-exactly the laundering path §12 opens with. What holds until step 4 is that the edge is a
-greppable line in a source diff a human approves, which is weaker than the check that
-replaces it.
+Steps 3, 4 and 6 followed. Core resolves and hashes through the same layer machinery,
+with purity refused at the gate and in `codeact check` — which also names core modules no
+dependent example covers, since dependents are core's only contract. `uses=` is verified
+against the AST both ways, the job is validated against the effective closure, the card
+renders provenance, and the capability delta compares effective closures — so the window
+in which an edge could exist unverified is closed. The miner clusters repeated call
+sequences in execution order, files paths an existing helper already walks under
+retrieval failures, and leaves shapes (step 5) as the remaining piece.
 
 ---
 
@@ -1204,8 +1215,9 @@ replaces it.
 | 5 ✅ | **the miner** (fingerprint, cluster, rank, synthesize), the four queues in the app, side-effect reports, project affinity, promote/demote | makes accumulation self-sustaining — and by now there's a corpus worth mining |
 | 6 ◐ | **the dependency edge** (§12): closure hash, the core layer, `uses=` with effect closure, shapes, sequence mining | the library has to be big enough for duplication between helpers to be a real cost before paying the price of coupling them |
 
-**Phases 1–5 are implemented**, and phase 6 is under way — its first two steps, the import
-path and the closure hash, are in (§12 Ordering). Layer 2 has a real answer: **`run_as` runs the
+**Phases 1–5 are implemented**, and phase 6 is in except for shapes: the import path,
+the closure hash, the core layer, `uses=` with the effect closure, and sequence mining
+(§12 Ordering). Layer 2 has a real answer: **`run_as` runs the
 interpreter as a separate OS user**, which is enforced by the kernel rather than by an
 AST walk. Two facts shaped it, both measured rather than assumed. An unprivileged parent
 cannot use `subprocess(user=)` at all — it raises `PermissionError` without `CAP_SETUID`
@@ -1240,9 +1252,14 @@ trial run of unreviewed code is the least safe thing in the system (§11).
 
 1. **How often should the miner run, and does it need a budget?** Batch review is now the
    default surface (§6 track 2 lands there), which settles the friction question, but not
-   the cadence: nightly, weekly, or on an explicit `/codeact:mine`? The synthesis pass
+   the cadence: nightly, weekly, or on an explicit `/codeact:mine`? ~~The synthesis pass
    costs model calls proportional to cluster count, so it likely needs a cap on candidates
-   per run — and a rule for what happens to clusters that keep getting deferred.
+   per run — and a rule for what happens to clusters that keep getting deferred.~~ **The
+   budget half is answered**: a run surfaces at most `mine.budget` clusters, best-scored
+   across the candidate and sequence queues, and a cluster shown `mine.defer_after` times
+   without action is parked until its evidence grows beyond what it had when last shown —
+   repeated deferral *is* an answer, just not one in writing, and new evidence is what
+   reopens the case. Only a real `codeact mine` counts as a showing. Cadence stays open.
 2. **Seed library.** Ship with a starter set (file/AST/HTTP/git utilities) so discovery
    has something to find on day one, or stay empty so everything is earned?
 3. **Helper granularity.** ~~One file per helper is maximally reviewable but awkward for
@@ -1282,9 +1299,13 @@ trial run of unreviewed code is the least safe thing in the system (§11).
    object was the wrong shape for the idea; what's real is a new *mining* cluster type,
    over repeated call sequences rather than repeated inline code.
 8. **How do secrets get in?** `codeact secret set`, import from the environment, keyring
-   passthrough — and what happens when a helper declares a secret that isn't set yet. The
+   passthrough — and what happens when a helper declares a secret that isn't set yet. ~~The
    card should probably surface it as an unmet precondition rather than failing at call
-   time with something opaque.
+   time with something opaque.~~ **That half is answered**: the card checks its effective
+   secrets — its own and everything reached through `uses=` — against the store, and an
+   unset one renders as an unmet precondition naming the exact `codeact secret set`
+   command. Under `run_as` the server brokers declared secrets to approved helpers (§10).
+   How values get in beyond `codeact secret set` stays open.
 9. **When a helper is obviously project-specific, what then?** Project affinity (§7) keeps
    it from cluttering other projects' retrieval, but it's a ranking fix for a modelling
    gap. If this turns out to be common rather than rare, per-project libraries come back

@@ -128,9 +128,21 @@ def read_jsonl(path: str, *, skip_blank: bool = True) -> list[dict]:
     """
 ```
 
-A helper may lean on another one — `from codeact.helpers import group_by` — resolved
-against your library first and the shipped seeds second. Declaring those edges so the gate
-can check the reach they add is still to come (DESIGN.md §12).
+A helper may lean on another one — declared as `uses=["group_by"]` and imported as
+`from codeact.helpers import group_by`, resolved against your library first and the
+shipped seeds second. The gate verifies the declaration against the imports in both
+directions: an undeclared import is hidden reach, a declared name never imported is a
+stale card. A helper's *effective* reach is its own plus everything it uses,
+transitively — the job is checked against that closure, the card says where each
+capability came from (`side effects: network (via fetch_url)`), and a revision whose
+entire change is one added dependency is flagged as the escalation it is.
+
+Pure code worth sharing but not discovering lives in a third place — `~/.codeact/core/`,
+imported as `from codeact.core import records`. No card, never searchable, and pure by
+rule: core reaching for the network or a subprocess is refused, because shared code that
+touches the world is already a helper (DESIGN.md §12). Core is verified through the
+captured examples of the helpers that use it, so `codeact check` names any core module
+nothing covers.
 
 Every helper declares exactly one **job** — `acquire`, `parse`, `transform`, `inspect`,
 `present`, `generate`, `mutate`, `orchestrate` — plus one to three **domains**. The
@@ -188,12 +200,22 @@ quietly gaining reach looks identical whether the cause is malice or a confused 
 
 ### Mining
 
-`codeact mine` reads the corpus and produces four queues. New candidates are the
+`codeact mine` reads the corpus and produces five queues. New candidates are the
 obvious one. The valuable one is **retrieval failures**: inline code that re-implements a
 helper you already have, which means the library was fine and *discovery* broke. Those are
 two different problems with two different fixes, and they are otherwise indistinguishable.
-The other two queues are helpers failing often enough to need revision, and helpers
-nothing has called.
+**Recurring sequences** are the composition version of a candidate — the same path of
+helper calls, `a()` then `b()`, showing up across sessions. Every step is already a
+reviewed unit, so a recurring path is an `orchestrate` helper waiting for a name; a path
+some helper already packages files under retrieval failures instead. The last two queues
+are helpers failing often enough to need revision, and helpers nothing has called —
+where a helper called only by other helpers counts as called.
+
+Attention is the budgeted resource: one run surfaces at most a configured number of
+clusters (`{"mine": {"budget": 10, "defer_after": 3}}`), and a cluster you have seen
+three times without acting is parked until its evidence grows beyond what it had when
+you last saw it. Only a real `codeact mine` counts as a showing — the review app browses
+the same queues without burning any, and `codeact mine --all` shows everything.
 
 Ranking does not use raw frequency. Five uses in one session is one task; five sessions is
 a habit; five *projects* is unambiguously a library function. Code that had to be fixed
@@ -320,14 +342,23 @@ your full privileges; someone who set `run_as` believes they are isolated.
 The runner also cannot write to your project. That is usually what you want from
 `run_python` — file edits should go through `Edit`/`Write`, which stay reviewable — but
 it will break a helper that legitimately writes files. And because the secret store is
-`0600` and owned by you, the runner cannot read it either, which is the right default
-and means secret-using helpers need the broker described in DESIGN.md §10.
+`0600` and owned by you, the runner cannot read it either. That stays the right default:
+instead of widening the file, the server **brokers** declared secrets to approved
+helpers over the protocol pipe (DESIGN.md §10) — the worker's local read misses, the
+server performs it as you, and it answers only for secrets some approved helper
+declared. Every request lands in the session transcript, served or not, because a
+helper suddenly asking for a secret it never used before is drift a human should see.
 
 ## Secrets
 
 A helper declares `requires_secrets=["GITHUB_TOKEN"]`, and approving that helper approves
 that specific pairing — the token being reachable by one helper says nothing about
 anything else. The agent never sees a value.
+
+A declared secret nobody has set is an **unmet precondition on the card** — named there,
+with the exact `codeact secret set` command that fixes it — rather than an opaque failure
+at call time. The check follows the dependency closure, so a helper whose dependency
+needs the token warns too.
 
 Three layers, because none alone is enough: a secret is never bound in the namespace; a
 `Secret` wrapper redacts through `str`, `repr` and f-strings; and everything leaving the

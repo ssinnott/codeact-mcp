@@ -106,6 +106,13 @@ The test: *would a future session, with no memory of this task, be better off?*
 Propose when the interface is stable and it isn't already a helper. Don't propose a
 one-liner around stdlib, or something so task-specific nobody would find it again.
 
+A helper may build on existing helpers: import with
+`from codeact.helpers import <name>` and declare every one in
+`@helper(..., uses=["<name>"])` — the gate checks the declaration against the
+imports, both directions, and an undeclared import is rejected as hidden reach. A
+recurring *path* through the library (`a()` then `b()`) is worth proposing as an
+`orchestrate` helper whose body is those calls.
+
 Write the docstring as though it is the only thing anyone will ever read about the
 function, **because it is** — whoever calls it later sees the card and never the
 code. That means: a summary saying what it is *for*, `Use when:` and
