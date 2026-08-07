@@ -68,7 +68,8 @@ codeact-mcp/                        # this repo = the plugin
     ├── search.py         # filter and rank
     ├── taxonomy.py       # the closed job and domain vocabularies
     ├── config.py         # ~/.codeact/config.json
-    ├── miner.py          # fingerprint, cluster, rank, the four queues
+    ├── miner.py          # fingerprint, cluster, rank, the five queues
+    ├── synth.py          # `mine --synthesize`: model-drafted proposals, via the claude CLI
     └── cli/              # the human surfaces, one module per command group
         ├── overview.py   # `codeact` — library, queue, guard, policy, on one screen
         ├── review.py + review.html   # the approval app: cards, diffs, trial runs
@@ -1233,8 +1234,13 @@ matters most for an interpreter that would otherwise be able to read `~/.ssh`.
 
 Two other honest limits. Secrets are stored under filesystem permissions only; the
 standard library ships no cipher, and rolling one would read as protection while
-providing none. And the miner's synthesis step is manual: it surfaces ranked clusters
-for a human to act on rather than writing the helper itself.
+providing none. And the miner's synthesis step is manual by default: it surfaces ranked
+clusters for a human to act on. `codeact mine --synthesize` closes the loop with a model
+— it wraps the Claude Code CLI (already present and authenticated wherever the plugin
+runs, so the server stays dependency-free) with the evidence, the card contract and the
+library index, and every draft goes through the same gate as `propose_helper`: pending
+or rejected, never installed, always reviewable. Sending corpus code to a model is an
+explicit per-run choice, exactly as §6 required — never a side effect of mining.
 
 Phase 1 is a day. Phases 2–3 are where the design risk is. Four sequencing points worth
 keeping: phase 2 uses hand-written helpers so we can measure whether task-driven discovery

@@ -1,8 +1,10 @@
 """`codeact mine` — what the corpus says the library is missing.
 
 Runs out of the hot path by design: mining during a session would compete with
-the task for exactly the attention the task needs. Nothing here changes the
-library; it produces queues for a human to look at.
+the task for exactly the attention the task needs. Nothing here installs into
+the library: the queues are for a human to look at, and `--synthesize` goes
+one step further only by drafting *proposals* — same gate, same review, same
+human deciding.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import argparse
 import textwrap
 
-from .. import miner, registry
+from .. import miner, proposals, registry, synth
 
 
 def register(subparsers) -> None:
@@ -26,6 +28,12 @@ def register(subparsers) -> None:
         "--all",
         action="store_true",
         help="everything, ignoring the budget and parked clusters; counts as no showing",
+    )
+    parser.add_argument(
+        "--synthesize",
+        action="store_true",
+        help="draft proposals from the queues by wrapping the claude CLI; "
+        "a human still approves every one in `codeact review`",
     )
     parser.set_defaults(handler=run)
 
@@ -98,5 +106,36 @@ def run(args: argparse.Namespace) -> int:
             "action, so they wait for new evidence. `codeact mine --all` shows "
             "everything."
         )
+
+    if args.synthesize:
+        return synthesize(reg, q)
+
     print("\nReview and act on these with `codeact review`.")
+    return 0
+
+
+def synthesize(reg, q) -> int:
+    """Hand the queues to the model and gate whatever it drafts.
+
+    The budget already shaped `q`, so synthesis costs are capped by the same
+    knob that caps attention — one number to reason about, not two.
+    """
+    print("\n== synthesis ==")
+    index = [e.card.index_line() for e in sorted(reg.available(), key=lambda e: e.name)]
+    result = synth.run(q, index)
+    if result.get("error"):
+        print(f"  {result['error']}")
+        return 1
+
+    for p in result["filed"]:
+        if p.status == proposals.PENDING:
+            print(f"  PENDING  {p.name}  (proposal {p.id}) — passed the gate")
+        else:
+            print(f"  FAILED   {p.name}  (proposal {p.id}) — {len(p.problems)} problem(s):")
+            for problem in p.problems[:4]:
+                print(f"             {problem}")
+    print(
+        "\nNothing was installed. Approve or reject the pending drafts with "
+        "`codeact review`."
+    )
     return 0

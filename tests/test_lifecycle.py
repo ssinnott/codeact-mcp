@@ -831,6 +831,106 @@ class TestMinerBudget(Case):
         self.assertEqual([i["digest"] for i in out["candidates"]], ["b"])
 
 
+class TestSynthesis(Case):
+    """`codeact mine --synthesize`: the model drafts, the gate decides, a
+    human approves. The claude CLI is stubbed — what is under test is the
+    envelope, the wiring, and the property that nothing installs."""
+
+    def stub(self, stdout: str = "", exit_code: int = 0):
+        from codeact_mcp import config
+
+        draft = self.home / "draft.txt"
+        draft.write_text(stdout)
+        script = self.home / "fakeclaude"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'cat > "{self.home}/prompt.txt"\n'
+            f'cat "{draft}"\n'
+            f"exit {exit_code}\n"
+        )
+        script.chmod(0o755)
+        config.save(
+            {**config.load(), "mine": {"budget": 10, "defer_after": 3,
+                                       "synth_command": [str(script)]}}
+        )
+
+    def cluster(self, code="rows = [r for r in data if r['ok']]\nprint(len(rows))"):
+        return {
+            "candidates": [{
+                "digest": "d1", "code": code, "count": 3, "sessions": 2,
+                "projects": ["/p", "/q"], "failures": 1, "score": 8.0,
+            }],
+            "sequences": [],
+        }
+
+    def test_a_draft_is_gated_and_filed_pending_never_installed(self):
+        from codeact_mcp import synth
+
+        self.stub(f"Here you go.\n=== HELPER slugify ===\n{GOOD}\n=== END HELPER ===\n")
+        result = synth.run(self.cluster(), index_lines=[])
+        self.assertNotIn("error", result)
+        (p,) = result["filed"]
+        self.assertEqual(p.status, proposals.PENDING)
+        self.assertIn(p.id, [x.id for x in proposals.listing(proposals.PENDING)])
+        self.assertIsNone(registry.registry(reload=True).get("slugify"))
+
+    def test_the_prompt_carries_the_evidence_and_the_contract(self):
+        from codeact_mcp import synth
+
+        self.stub(f"=== HELPER slugify ===\n{GOOD}\n=== END HELPER ===\n")
+        synth.run(self.cluster(code="acc = sorted(set(xs))"), index_lines=["existing_helper(x)"])
+        prompt = (self.home / "prompt.txt").read_text()
+        self.assertIn("acc = sorted(set(xs))", prompt)   # the evidence
+        self.assertIn("Don't use when:", prompt)         # the card contract
+        self.assertIn("orchestrate", prompt)             # the vocabulary
+        self.assertIn("existing_helper(x)", prompt)      # what not to duplicate
+
+    def test_a_bad_draft_is_filed_rejected_with_its_problems(self):
+        from codeact_mcp import synth
+
+        # A draft failing the gate must still be reviewable, not vanish.
+        broken = GOOD.replace("    Don't use when: you need the original back — this is lossy.\n", "")
+        self.stub(f"=== HELPER slugify ===\n{broken}\n=== END HELPER ===\n")
+        (p,) = synth.run(self.cluster(), index_lines=[])["filed"]
+        self.assertEqual(p.status, proposals.REJECTED)
+        self.assertTrue(p.problems)
+
+    def test_a_missing_cli_is_a_named_error_not_a_crash(self):
+        from codeact_mcp import config, synth
+
+        config.save({**config.load(), "mine": {"synth_command": ["no-such-cli-zqx"]}})
+        result = synth.run(self.cluster(), index_lines=[])
+        self.assertIn("not on PATH", result["error"])
+
+    def test_a_failing_cli_reports_its_exit(self):
+        from codeact_mcp import synth
+
+        self.stub("half an answ", exit_code=3)
+        self.assertIn("exited 3", synth.run(self.cluster(), index_lines=[])["error"])
+
+    def test_a_reply_with_no_drafts_is_an_error(self):
+        from codeact_mcp import synth
+
+        self.stub("I would rather not.\n")
+        self.assertIn("no === HELPER === blocks", synth.run(self.cluster(), index_lines=[])["error"])
+
+    def test_empty_queues_do_not_invoke_the_model(self):
+        from codeact_mcp import synth
+
+        self.stub("should never run")
+        result = synth.run({"candidates": [], "sequences": []}, index_lines=[])
+        self.assertIn("nothing to synthesize", result["error"])
+        self.assertFalse((self.home / "prompt.txt").exists())
+
+    def test_parse_strips_a_fence_the_model_added(self):
+        from codeact_mcp import synth
+
+        drafts = synth.parse(
+            "=== HELPER f ===\n```python\nX = 1\n```\n=== END HELPER ==="
+        )
+        self.assertEqual(drafts, [("f", "X = 1\n")])
+
+
 class TestTrialRun(Case):
     def test_a_clean_candidate_reports_no_reach(self):
         report = trial.run(GOOD, [{"code": "slugify('Hi There')"}])

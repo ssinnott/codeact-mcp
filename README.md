@@ -217,6 +217,23 @@ three times without acting is parked until its evidence grows beyond what it had
 you last saw it. Only a real `codeact mine` counts as a showing — the review app browses
 the same queues without burning any, and `codeact mine --all` shows everything.
 
+### Synthesis
+
+```
+codeact mine --synthesize
+```
+
+goes one step further: it hands the budgeted queues to a model and gates whatever comes
+back. It wraps the **Claude Code CLI** — already installed and authenticated wherever
+this plugin runs, so there is no API key to manage and the server stays pure standard
+library — with the evidence, the card contract, the vocabulary, and the current library
+index so it knows what not to duplicate. Every draft goes through the exact gate
+`propose_helper` uses: a good one lands **pending** in `codeact review`, a bad one lands
+rejected with its problems, and nothing is ever installed by the model. Sending corpus
+code to a model is an explicit per-run choice — mining alone never does it. Point
+`mine.synth_command` in `config.json` at something else to pick a model or flags
+(e.g. `["claude", "-p", "--model", "claude-sonnet-5"]`).
+
 Ranking does not use raw frequency. Five uses in one session is one task; five sessions is
 a habit; five *projects* is unambiguously a library function. Code that had to be fixed
 before it worked ranks higher too, because the helper bakes in a correction that was

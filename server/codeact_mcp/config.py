@@ -35,8 +35,11 @@ DEFAULTS: dict[str, Any] = {
     # `codeact mine`: how many clusters one run may surface (0 = uncapped), and
     # how many times a cluster is shown without action before it is parked
     # until its evidence grows. Attention is the budgeted resource — a queue
-    # that repeats itself every run is a queue nobody reads.
-    "mine": {"budget": 10, "defer_after": 3},
+    # that repeats itself every run is a queue nobody reads. synth_command is
+    # what `codeact mine --synthesize` wraps to draft proposals from the
+    # queues: the Claude Code CLI in headless mode by default, overridable to
+    # pick a model, add flags, or substitute a stub in tests.
+    "mine": {"budget": 10, "defer_after": 3, "synth_command": ["claude", "-p"]},
     # Shell commands routed through CodeAct instead of Bash — see §9, layer 0.
     # Ships off: these rules are a template, and blocking a command someone
     # relies on without being asked is worse than blocking nothing. Flip the
