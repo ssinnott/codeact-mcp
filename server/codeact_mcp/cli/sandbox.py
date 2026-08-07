@@ -122,8 +122,9 @@ def run(args: argparse.Namespace) -> int:
         print("Ready. Set this in ~/.codeact/config.json:")
         print(f'  {{"run_as": "{runner}"}}')
         print("\nIf a helper needs a secret, note that the secret store is 0600 and owned")
-        print("by you — the runner cannot read it. That is the correct default, and it")
-        print("means secret-using helpers need the broker described in DESIGN.md §10.")
+        print("by you — the runner cannot read it. That is the correct default; the")
+        print("server brokers declared secrets to approved helpers over the protocol")
+        print("pipe (DESIGN.md §10), and every request lands in the session transcript.")
     else:
         print("Not ready. The interpreter will refuse to start rather than quietly")
         print("running with your full privileges.")

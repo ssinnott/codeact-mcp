@@ -143,6 +143,26 @@ class Denied(RuntimeError):
     pass
 
 
+# The worker's half of the run_as broker (§10). Under run_as the store file is
+# 0600 and owned by the human, so the interpreter process cannot read it — the
+# right default, and one that would otherwise break every approved
+# secret-using helper. The worker installs a callable here that asks the
+# server process over the protocol pipe; the server, running as the human,
+# does the read and its own declared-by-an-approved-helper check before
+# answering. None means no broker: the local file is the only route.
+broker = None
+
+
+def broker_read(name: str) -> str | None:
+    """The server's half: a raw read for relaying to the worker.
+
+    Only ever called in the MCP server process, which runs as the human and
+    can read the store; the caller is responsible for having checked that the
+    secret is one an approved helper declared.
+    """
+    return _read().get(name)
+
+
 def _calling_helper() -> str:
     """Walk out of this module and report the caller's module name."""
     frame = sys._getframe(1)
@@ -170,6 +190,12 @@ def get(name: str, *, registry_names: set[str] | None = None) -> Secret:
             f"helper with requires_secrets=[{name!r}] and have it approved."
         )
     values = _read()
+    if name not in values and broker is not None:
+        # After the caller check, deliberately: the broker widens who can
+        # perform the read, not who may ask for it.
+        value = broker(name)
+        if value:
+            return Secret(name, value)
     if name not in values:
         raise KeyError(
             f"no secret named {name!r} — set one with "

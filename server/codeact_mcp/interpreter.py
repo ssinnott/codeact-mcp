@@ -192,9 +192,9 @@ class Session:
         payload = {**payload, "id": self._seq}
         self._send(payload)
 
-        line = self._read_line(time.monotonic() + timeout)
-        if line is not None:
-            return json.loads(line)
+        reply = self._receive(time.monotonic() + timeout)
+        if reply is not None:
+            return reply
 
         # Timed out. Try to interrupt without losing the namespace.
         proc = self.proc
@@ -203,15 +203,67 @@ class Session:
                 proc.send_signal(signal.SIGINT)
             except Exception:
                 pass
-            line = self._read_line(time.monotonic() + GRACE_AFTER_INTERRUPT)
-            if line is not None:
-                return json.loads(line)
+            reply = self._receive(time.monotonic() + GRACE_AFTER_INTERRUPT)
+            if reply is not None:
+                return reply
 
         self.restart()
         raise Timeout(
             f"no response after {timeout:.0f}s and the interpreter did not respond to "
             "an interrupt, so it was restarted — all session state was lost"
         )
+
+    def _receive(self, deadline: float) -> dict | None:
+        """Read until the worker's answer, serving broker requests on the way.
+
+        A secret request arriving mid-execution is the worker's approved
+        helper asking for a value its process cannot read (run_as makes the
+        store unreadable there, by design) — answered inline and never
+        returned to the caller, so the operation's own reply is still what
+        request() resolves to.
+        """
+        while True:
+            line = self._read_line(deadline)
+            if line is None:
+                return None
+            reply = json.loads(line)
+            if isinstance(reply, dict) and reply.get("op") == "secret":
+                self._serve_secret(reply)
+                continue
+            return reply
+
+    def _serve_secret(self, msg: dict) -> None:
+        """The server's half of the run_as secret broker (§10).
+
+        The worker's frame-walk check is policy inside a process this side
+        cannot see into, so the server enforces the half it owns: only a
+        secret some approved helper declared is ever served, which stops the
+        worker minting access to values nothing was approved for. Every
+        request lands in the transcript either way — a helper suddenly asking
+        for a secret it never used before is exactly the drift a human should
+        get to see.
+        """
+        name = str(msg.get("name") or "")
+        value: str | None = None
+        try:
+            from . import secrets_store, trace
+            from .registry import registry
+
+            declared: set[str] = set()
+            for entry in registry().entries.values():
+                declared.update(entry.card.meta.requires_secrets)
+            if name in declared:
+                value = secrets_store.broker_read(name)
+            trace.secret_requested(name, served=bool(value), declared=name in declared)
+        except Exception:
+            value = None
+        proc = self.proc
+        if proc is not None and proc.stdin is not None:
+            try:
+                proc.stdin.write((json.dumps({"value": value or ""}) + "\n").encode())
+                proc.stdin.flush()
+            except Exception:
+                pass
 
     # -- operations -------------------------------------------------------
 

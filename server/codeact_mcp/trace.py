@@ -169,6 +169,15 @@ def source_read(name: str, reason: str) -> None:
     _write("source", {"helper": name, "reason": _clip(reason)})
 
 
+def secret_requested(name: str, *, served: bool, declared: bool) -> None:
+    """A broker request from the worker — the name only, never the value.
+
+    Logged whether or not it was served: a helper suddenly asking for a secret
+    it never used before is exactly the drift a human should get to see (§10).
+    """
+    _write("secret", {"name": name, "served": served, "declared": declared})
+
+
 def end() -> None:
     if _seq:
         _write("end", {})

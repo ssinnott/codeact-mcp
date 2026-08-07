@@ -280,6 +280,41 @@ def _install_command_policy() -> None:
     sys.addaudithook(spawn_audit)
 
 
+def _install_secret_broker(protocol) -> None:
+    """The worker's half of the run_as secret broker (§10).
+
+    Under run_as this process cannot read the 0600 store the human owns, so an
+    approved helper's `secrets_store.get` would fail for the one reason that
+    is nobody's fault. The fallback asks the parent over the protocol pipe and
+    reads the reply off stdin — safe mid-execution, because the parent never
+    sends anything unprompted while a block is running.
+
+    The store's caller check still runs in this process before the broker is
+    consulted; the parent additionally refuses names no approved helper
+    declared, since nothing this process says about its caller can be trusted
+    from outside it. Same honest caveat as ever: the plaintext still enters
+    this process, so this is delegation for run_as, not the signing-proxy
+    strong version.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+        from codeact_mcp import secrets_store
+    except Exception:
+        return
+
+    def request(name: str) -> str | None:
+        try:
+            protocol.write(json.dumps({"op": "secret", "name": str(name)}) + "\n")
+            line = sys.stdin.readline()
+            if not line:
+                return None
+            return json.loads(line).get("value") or None
+        except Exception:
+            return None
+
+    secrets_store.broker = request
+
+
 def main() -> None:
     # Move the protocol channel off fd 1 before running anything untrusted.
     protocol = os.fdopen(os.dup(1), "w", buffering=1)
@@ -292,8 +327,15 @@ def main() -> None:
     # After preloading: an audit hook cannot be removed, and helper imports
     # legitimately spawn nothing, so there is no reason to police startup.
     _install_command_policy()
+    _install_secret_broker(protocol)
 
-    for line in sys.stdin:
+    # readline rather than iteration: the broker reads its reply from stdin
+    # mid-execution, and an iterator's claim on the stream would make that a
+    # buffering question instead of a sequencing one.
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
         line = line.strip()
         if not line:
             continue

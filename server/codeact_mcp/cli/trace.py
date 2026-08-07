@@ -180,6 +180,11 @@ def _event(e: dict, full: bool) -> None:
         print(f"[{e.get('n')}] {when}  granted {e.get('capability')} — {e.get('reason')}\n")
     elif kind == "source":
         print(f"[{e.get('n')}] {when}  read the source of {e.get('helper')} — {e.get('reason')}\n")
+    elif kind == "secret":
+        outcome = "served" if e.get("served") else (
+            "refused (undeclared)" if not e.get("declared") else "not set"
+        )
+        print(f"[{e.get('n')}] {when}  secret {e.get('name')} requested via broker — {outcome}\n")
     elif kind == "end":
         print(f"[{e.get('n')}] {when}  session ended\n")
 
