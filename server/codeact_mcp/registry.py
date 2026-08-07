@@ -188,7 +188,21 @@ class Registry:
                     # and only the error above is left to report it.
                     for name in linkage.declared_helpers(path):
                         self.broken[name] = Broken(name, path, builtin, reason)
+        self._link()
         return self
+
+    def _link(self) -> None:
+        """Compute each helper's effective reach, once the whole library is here.
+
+        After the load loop rather than inside it, because reach follows edges
+        to entries that may load later in the same pass — and a reach computed
+        against half a library would understate exactly the thing it exists to
+        state (§12).
+        """
+        for entry in self.entries.values():
+            entry.card.reach = linkage.reach(
+                entry.name, entry.card.meta, entry.path, self.entries
+            )
 
     # -- views ------------------------------------------------------------
 
@@ -234,10 +248,17 @@ def _dir_stamp() -> tuple:
 
     An edited dependency lands here too, since a helper's dependencies are
     themselves files in these directories — which is what makes a quarantine
-    triggered by a closure change show up without a restart.
+    triggered by a closure change show up without a restart. Core counts as a
+    dependency directory for exactly that reason: editing a core module changes
+    no helper file, and the closure hash is what notices.
     """
     marks = []
-    for directory in (paths.seeds_dir(), paths.helpers_dir()):
+    for directory in (
+        paths.seeds_dir(),
+        paths.helpers_dir(),
+        paths.seeds_core_dir(),
+        paths.core_dir(),
+    ):
         try:
             marks.append(
                 tuple(sorted((p.name, p.stat().st_mtime_ns) for p in directory.glob("*.py")))

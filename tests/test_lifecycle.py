@@ -167,6 +167,147 @@ class TestProposalGate(Case):
         self.assertIn("TOKEN", p.diff.get("secrets_gained", []))
 
 
+FETCHER = '''"""Fetcher."""
+from __future__ import annotations
+from codeact import helper
+
+@helper(job="acquire", domains=["http"], side_effects="network",
+        requires_secrets=["TOKEN"], examples=[{"code": "fetch_thing('x')"}])
+def fetch_thing(name: str) -> str:
+    """Pretend to fetch a named thing from the network.
+
+    Use when: demonstrating reach in tests.
+    Don't use when: anything real.
+    Args:
+        name: which thing to fetch
+    Returns:
+        a short string describing the thing
+    """
+    return f"thing:{name}"
+'''
+
+WRAPPER = '''"""Wrapper."""
+from __future__ import annotations
+from codeact import helper
+from codeact.helpers import fetch_thing
+
+@helper(job="acquire", domains=["http"], side_effects="network",
+        uses=["fetch_thing"], examples=[{"code": "wrap('x')"}])
+def wrap(name: str) -> str:
+    """Fetch a thing and wrap it in brackets for display.
+
+    Use when: demonstrating the dependency edge in tests.
+    Don't use when: anything real.
+    Args:
+        name: which thing to fetch and wrap
+    Returns:
+        the thing's description in square brackets
+    """
+    return "[" + fetch_thing(name) + "]"
+'''
+
+
+class TestDependencyEdge(Case):
+    """§12: uses= verified against the AST, and reach checked over the closure."""
+
+    def setUp(self):
+        super().setUp()
+        # Into the user library, not the (monkeypatched) seeds: examples run in
+        # a subprocess, which sees the real environment — CODEACT_HOME travels,
+        # a patched module attribute does not.
+        (self.home / "helpers" / "fetch_thing.py").write_text(FETCHER)
+        registry.registry(reload=True)
+
+    def test_a_declared_and_imported_edge_passes(self):
+        p = proposals.propose("wrap", WRAPPER)
+        self.assertEqual(p.problems, [])
+        self.assertEqual(p.uses, ["fetch_thing"])
+
+    def test_an_undeclared_import_is_hidden_reach(self):
+        p = proposals.propose("wrap", WRAPPER.replace('uses=["fetch_thing"], ', ""))
+        self.assertTrue(any("hidden reach" in x for x in p.problems))
+
+    def test_a_declared_but_unimported_use_is_a_stale_card(self):
+        source = WRAPPER.replace(
+            "from codeact.helpers import fetch_thing\n", ""
+        ).replace('"[" + fetch_thing(name) + "]"', '"[" + name + "]"')
+        p = proposals.propose("wrap", source)
+        self.assertTrue(any("never imports" in x for x in p.problems))
+
+    def test_the_effect_closure_stops_reach_laundering(self):
+        # A transform that calls an acquire is not a transform — however pure
+        # its own body looks, and that is exactly what makes this the
+        # dangerous case.
+        laundered = WRAPPER.replace(
+            'job="acquire", domains=["http"], side_effects="network",\n        uses',
+            'job="transform", domains=["data"], uses',
+        )
+        p = proposals.propose("wrap", laundered)
+        self.assertTrue(
+            any("reached via 'fetch_thing'" in x for x in p.problems), p.problems
+        )
+
+    def test_using_a_helper_nobody_has_is_reported(self):
+        source = WRAPPER.replace('uses=["fetch_thing"]', 'uses=["fetch_thing", "ghost"]')
+        p = proposals.propose("wrap", source)
+        self.assertTrue(any("no helper by that name" in x for x in p.problems))
+
+    def test_the_card_shows_where_each_capability_came_from(self):
+        p = proposals.propose("wrap", WRAPPER)
+        self.assertIn("uses: fetch_thing", p.card)
+        self.assertIn("TOKEN (via fetch_thing)", p.card)
+
+    def test_an_imported_cycle_is_refused_by_the_loader_naming_the_path(self):
+        proposals.approve(proposals.propose("wrap", WRAPPER).id)
+        looped = FETCHER.replace(
+            "from codeact import helper",
+            "from codeact import helper\nfrom codeact.helpers import wrap",
+        ).replace(
+            'requires_secrets=["TOKEN"], ',
+            'requires_secrets=["TOKEN"], uses=["wrap"], ',
+        ).replace('return f"thing:{name}"', 'return wrap(name)')
+        p = proposals.propose("fetch_thing", looped, revises="fetch_thing")
+        self.assertTrue(
+            any("fetch_thing -> wrap -> fetch_thing" in x for x in p.problems),
+            p.problems,
+        )
+
+    def test_a_declared_cycle_is_refused_by_the_gate_naming_the_path(self):
+        # No import, so the loader never sees it — the reach computation is
+        # what has to notice a declaration that loops back to its own root.
+        proposals.approve(proposals.propose("wrap", WRAPPER).id)
+        looped = FETCHER.replace(
+            'requires_secrets=["TOKEN"], ',
+            'requires_secrets=["TOKEN"], uses=["wrap"], ',
+        )
+        p = proposals.propose("fetch_thing", looped, revises="fetch_thing")
+        self.assertTrue(any("dependency cycle" in x for x in p.problems), p.problems)
+        self.assertTrue(
+            any("fetch_thing -> wrap -> fetch_thing" in x for x in p.problems),
+            p.problems,
+        )
+
+    def test_gaining_reach_through_uses_alone_escalates(self):
+        # The revision §12 calls the most dangerous in the system: nothing
+        # about the helper's own declarations changes — the whole edit is one
+        # new dependency — and network plus a secret arrive through it.
+        proposals.approve(proposals.propose("slugify", GOOD).id)
+        risky = GOOD.replace(
+            "from codeact import helper",
+            "from codeact import helper\nfrom codeact.helpers import fetch_thing",
+        ).replace(
+            'job="transform", domains=["text"],',
+            'job="orchestrate", domains=["text"], side_effects="inherits", uses=["fetch_thing"],',
+        ).replace(
+            "return sep.join(w.lower() for w in words)",
+            "return fetch_thing(sep.join(w.lower() for w in words))",
+        )
+        p = proposals.propose("slugify", risky, revises="slugify")
+        self.assertTrue(p.diff.get("escalates"), p.diff)
+        self.assertIn("TOKEN", p.diff.get("secrets_gained", []))
+        self.assertIn("network", p.diff.get("side_effects", ["", ""])[1])
+
+
 class TestReviewableAtEveryExit(Case):
     """Whatever the gate decides, the human has to be able to see the result.
 
@@ -367,6 +508,120 @@ class TestSecrets(Case):
     def test_short_values_are_not_redacted_from_everything(self):
         secrets_store.put("TINY", "ab")
         self.assertEqual(secrets_store.redact("about"), "about")
+
+
+class TestSecretPreconditions(Case):
+    """An unset secret is an unmet precondition on the card, not an opaque
+    failure at call time — only a human can fix it, so the card names the
+    command a human would run (open question 8)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.home / "helpers" / "fetch_thing.py").write_text(FETCHER)
+
+    def card(self):
+        return registry.registry(reload=True).get("fetch_thing").card.render()
+
+    def test_an_unset_secret_is_an_unmet_precondition_naming_the_fix(self):
+        card = self.card()
+        self.assertIn("UNMET PRECONDITION", card)
+        self.assertIn("secret set TOKEN", card)
+
+    def test_a_set_secret_leaves_no_warning_behind(self):
+        secrets_store.put("TOKEN", "sk-abcdefghijklmnop")
+        card = self.card()
+        self.assertIn("requires secrets: TOKEN", card)
+        self.assertNotIn("UNMET PRECONDITION", card)
+
+    def test_a_secret_reached_through_uses_is_also_checked(self):
+        # The precondition follows the effect closure: a helper whose
+        # dependency needs TOKEN fails just as surely when TOKEN is unset.
+        proposals.approve(proposals.propose("wrap", WRAPPER).id)
+        card = registry.registry(reload=True).get("wrap").card.render()
+        self.assertIn("TOKEN (via fetch_thing)", card)
+        self.assertIn("UNMET PRECONDITION", card)
+        secrets_store.put("TOKEN", "sk-abcdefghijklmnop")
+        card = registry.registry(reload=True).get("wrap").card.render()
+        self.assertNotIn("UNMET PRECONDITION", card)
+
+    def test_an_unreadable_store_never_takes_the_card_down(self):
+        os.environ["CODEACT_SECRETS"] = str(self.home)  # a directory, not a file
+        card = self.card()
+        self.assertIn("fetch_thing", card)
+
+
+SECRET_USER = '''"""Token peek."""
+from __future__ import annotations
+from codeact import helper
+from codeact_mcp import secrets_store
+
+@helper(job="acquire", domains=["http"], side_effects="network",
+        requires_secrets=["TOKEN"],
+        examples=[{"code": "token_length()", "raises": True}])
+def token_length() -> int:
+    """Report the length of the TOKEN secret without revealing it.
+
+    Use when: demonstrating the secret broker in tests.
+    Don't use when: anything real.
+    Returns:
+        the number of characters in the stored TOKEN
+    """
+    return len(secrets_store.get("TOKEN"))
+'''
+
+
+class TestSecretBroker(Case):
+    """§10 for run_as: a worker that cannot read the store asks the server.
+
+    The real run_as path needs a second OS user and a sudoers rule, which a
+    test suite cannot assume — but the broker mechanics are identical either
+    way: the worker's local read misses, the request crosses the protocol
+    pipe, and the server answers only for declared secrets. An unreadable
+    store path stands in for the permission wall the kernel would provide.
+    """
+
+    def setUp(self):
+        super().setUp()
+        (self.home / "helpers" / "token_length.py").write_text(SECRET_USER)
+        self.real_store = os.environ["CODEACT_SECRETS"]
+        secrets_store.put("TOKEN", "sk-abcdefghijklmnop")
+
+    def brokered_session(self):
+        # Spawn the worker with a store path that reads as empty, then point
+        # the parent back at the real one: the worker inherited its
+        # environment at spawn, so only its local read misses.
+        os.environ["CODEACT_SECRETS"] = str(self.home / "absent.json")
+        session = interpreter.Session(cwd=str(self.home))
+        self.addCleanup(session.stop)
+        session.start()
+        os.environ["CODEACT_SECRETS"] = self.real_store
+        return session
+
+    def test_a_worker_that_cannot_read_the_store_is_brokered(self):
+        session = self.brokered_session()
+        payload = session.execute("token_length()", timeout=30)
+        self.assertIsNone(payload.get("error"), payload)
+        self.assertEqual(payload.get("result"), "19")
+
+    def test_the_server_refuses_names_no_approved_helper_declared(self):
+        # Even code that reaches the broker callable directly — skipping the
+        # worker-side frame check entirely — gets nothing for a name outside
+        # the approved set: the server enforces the half it owns.
+        secrets_store.put("UNDECLARED", "sk-zyxwvutsrqponmlk")
+        session = self.brokered_session()
+        payload = session.execute(
+            "from codeact_mcp import secrets_store\n"
+            "repr(secrets_store.broker('UNDECLARED'))",
+            timeout=30,
+        )
+        self.assertEqual(payload.get("result"), "'None'")
+
+    def test_session_code_still_cannot_read_a_secret(self):
+        # The broker must not have widened who may *ask*: agent code hits the
+        # same refusal it always did, before any broker is consulted.
+        session = self.brokered_session()
+        payload = session.execute("secrets.get('TOKEN')", timeout=30)
+        self.assertIn("Denied", payload.get("error") or "")
 
 
 class TestMiner(Case):

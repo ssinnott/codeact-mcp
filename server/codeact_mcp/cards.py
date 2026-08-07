@@ -152,6 +152,11 @@ class Card:
     prose: Prose
     captured: list[dict[str, str]] = field(default_factory=list)
     quarantine: str = ""
+    # Effective reach (linkage.Reach), filled in once the whole library is
+    # loaded: what this helper can do through everything it uses, and where
+    # each capability came from. None until linked; the card then falls back
+    # to rendering only what the helper itself declares.
+    reach: Any = None
 
     # -- the two views the agent gets ------------------------------------
 
@@ -185,13 +190,39 @@ class Card:
             out += ["", f"Preconditions: {p.preconditions}"]
 
         facts = [f"job: {self.meta.job}", f"domains: {', '.join(self.meta.domains)}"]
-        if self.meta.side_effects != "none":
-            facts.append(f"side effects: {self.meta.side_effects}")
-        if self.meta.requires_secrets:
-            facts.append(f"requires secrets: {', '.join(self.meta.requires_secrets)}")
+        effects = self.effective_effects()
+        if effects:
+            facts.append(
+                "side effects: "
+                + "; ".join(e if not via else f"{e} (via {via})" for e, via in effects)
+            )
+        uses_line = self._uses_line()
+        if uses_line:
+            facts.append(uses_line)
+        secrets = self.effective_secrets()
+        if secrets:
+            facts.append(
+                "requires secrets: "
+                + ", ".join(s if not via else f"{s} (via {via})" for s, via in secrets)
+            )
         if self.meta.cost:
             facts.append(f"cost: {self.meta.cost}")
         out += ["", " | ".join(facts)]
+
+        # An unset secret is an unmet precondition, said here rather than left
+        # to surface as an opaque failure at call time. Only a human can fix
+        # it, so the card names the command a human would run.
+        unmet = self.unmet_secrets()
+        if unmet:
+            from . import paths
+
+            out += [""]
+            for name in unmet:
+                out += [
+                    f"!! UNMET PRECONDITION: secret {name} is not set, so calls "
+                    f"will fail until a human runs `python3 {paths.cli()} secret "
+                    f"set {name}`."
+                ]
 
         if self.captured:
             out += ["", "Examples (output captured from real runs):"]
@@ -208,6 +239,51 @@ class Card:
         if p.notes:
             out += ["", f"Notes: {p.notes}"]
         return "\n".join(out)
+
+    # -- effective reach, with declared-only fallback ---------------------
+
+    def effective_effects(self) -> tuple:
+        if self.reach is not None and self.reach.effects:
+            return self.reach.effects
+        if self.meta.side_effects != "none":
+            return ((self.meta.side_effects, ""),)
+        return ()
+
+    def effective_secrets(self) -> tuple:
+        if self.reach is not None and self.reach.secrets:
+            return self.reach.secrets
+        return tuple((s, "") for s in self.meta.requires_secrets)
+
+    def unmet_secrets(self) -> list[str]:
+        """Secrets this helper (or anything it uses) needs that nobody has set.
+
+        Best effort: an unreadable store must never take a card down with it,
+        so on any failure the answer is simply "nothing known to be unmet".
+        """
+        needed = [s for s, _ in self.effective_secrets()]
+        if not needed:
+            return []
+        try:
+            from . import secrets_store
+
+            available = set(secrets_store.names())
+        except Exception:
+            return []
+        return [s for s in needed if s not in available]
+
+    def _uses_line(self) -> str:
+        direct = self.meta.uses
+        closure = self.reach.uses if self.reach is not None else ()
+        extra = tuple(n for n in closure if n not in direct)
+        if direct and extra:
+            return f"uses: {', '.join(direct)} (closure: {', '.join(extra)})"
+        if direct:
+            return f"uses: {', '.join(direct)}"
+        if closure:
+            # Imported but never declared — legal before uses= existed, and
+            # rendered honestly rather than hidden.
+            return f"uses (undeclared): {', '.join(closure)}"
+        return ""
 
     def search_text(self) -> str:
         p = self.prose
@@ -250,11 +326,15 @@ def build(fn: Callable, captured: list[dict[str, str]] | None = None) -> Card:
 _LOW_CONTENT = re.compile(r"^(a |an |the )?(function|helper|method|utility)( that| to| for)?\b", re.I)
 
 
-def validate(fn: Callable) -> list[str]:
+def validate(fn: Callable, reach: Any = None) -> list[str]:
     """Every problem with a candidate, not just the first.
 
     Returning one at a time would cost a round trip per problem, which turns a
     five-defect proposal into five exchanges.
+
+    Pass `reach` (linkage.Reach) to check the job against the helper's
+    *effective* side effects rather than only its own — a transform that calls
+    an acquire is not a transform, however pure its own body looks (§12).
     """
     problems: list[str] = []
     meta = meta_of(fn)
@@ -265,6 +345,8 @@ def validate(fn: Callable) -> list[str]:
     problems += _validate_taxonomy(meta, name)
     problems += _validate_signature(fn)
     problems += _validate_prose(fn, parse_docstring(fn.__doc__))
+    if reach is not None:
+        problems += _validate_reach(meta, name, reach)
 
     if not meta.examples:
         problems.append(
@@ -298,6 +380,36 @@ def _validate_taxonomy(meta: Meta, name: str) -> list[str]:
         )
     if meta.requires_secrets and meta.side_effects == "none":
         problems.append("declares secrets but no side effects; a pure function has nothing to authenticate to")
+    return problems
+
+
+def _validate_reach(meta: Meta, name: str, reach: Any) -> list[str]:
+    """The job checked against what the helper can reach, not what it declares.
+
+    Only inherited effects are re-checked here — the helper's own declaration
+    is _validate_taxonomy's job, and reporting it twice would say the same
+    thing in two voices.
+    """
+    problems = []
+    for effect, via in reach.effects:
+        if not via:
+            continue
+        if meta.job in taxonomy.JOBS and not taxonomy.job_allows(meta.job, effect):
+            problems.append(
+                f"job {meta.job!r} is inconsistent with side effect {effect!r} "
+                f"reached via {via!r} — a {meta.job} that calls into {via} "
+                "inherits its reach, so either the job is wrong or the "
+                "dependency is"
+            )
+    for missing in reach.missing:
+        problems.append(
+            f"uses {missing!r}, but no helper by that name exists in the library"
+        )
+    if reach.cycle:
+        problems.append(
+            "dependency cycle: " + " -> ".join(reach.cycle) + " — a helper "
+            "cannot use itself, directly or through anything it uses"
+        )
     return problems
 
 

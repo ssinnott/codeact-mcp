@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .. import cards, contract, registry, taxonomy
+from .. import cards, contract, linkage, registry, taxonomy
 
 
 def register(subparsers) -> None:
@@ -40,7 +40,7 @@ def examples_of(entry) -> list[dict]:
 
 
 def check(entry, capture: bool) -> bool:
-    problems = cards.validate(entry.fn)
+    problems = cards.validate(entry.fn, reach=entry.card.reach)
     results = contract.run_examples(entry.path, examples_of(entry))
     failed = [r for r in results if not r["ok"]]
 
@@ -86,8 +86,46 @@ def run_check(args: argparse.Namespace) -> int:
 
     results = [check(entry, args.capture) for entry in sorted(entries, key=lambda e: e.name)]
     passed = sum(results)
+
+    core_clean = True
+    if not args.names:
+        core_clean = check_core(reg)
+
     print(f"\n{passed}/{len(results)} clean")
-    return 0 if passed == len(results) and not errors else 1
+    return 0 if passed == len(results) and core_clean and not errors else 1
+
+
+def check_core(reg) -> bool:
+    """Validate the core layer: purity, and whether anything covers it.
+
+    Core has no examples because it has no card, so it is verified through the
+    helpers that use it (§12) — which makes a core module with no dependents
+    genuinely unverified, and worth saying so out loud.
+    """
+    names = linkage.core_names()
+    if not names:
+        return True
+
+    dependents: dict[str, list[str]] = {name: [] for name in names}
+    for entry in reg.entries.values():
+        for closure_name, _ in linkage.closure(entry.path):
+            layer, _, stem = closure_name.partition("/")
+            if layer == "core" and stem in dependents:
+                dependents[stem].append(entry.name)
+
+    clean = True
+    print()
+    for name in names:
+        path = linkage.resolve("core", name)
+        problems = linkage.core_problems(path) if path else [f"core/{name}: vanished"]
+        ok = not problems
+        clean = clean and ok
+        users = ", ".join(sorted(dependents[name]))
+        coverage = f"used by: {users}" if users else "NO DEPENDENTS — nothing verifies it"
+        print(f"{'PASS' if ok else 'FAIL'}  core/{name}  ({coverage})")
+        for problem in problems:
+            print(f"    {problem}")
+    return clean
 
 
 def run_card(args: argparse.Namespace) -> int:

@@ -21,7 +21,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import paths
+from . import linkage, paths
 
 # Below this, a "pattern" is a line of glue and not worth a function.
 MIN_NODES = 12
@@ -332,10 +332,18 @@ def queues(reg, min_sessions: int = MIN_SESSIONS) -> dict[str, Any]:
                 0, {"name": entry.name, "quarantined": entry.card.quarantine}
             )
 
+    # Helper-to-helper calls count as calls: a shared helper's sessions-level
+    # usage may be zero precisely because everything reaches it through its
+    # dependents, and retiring it out from under them is the one wrong answer.
+    depended: set[str] = set()
+    for e in reg.entries.values():
+        depended.update(e.card.meta.uses)
+        depended.update(linkage.helper_imports(e.path))
+
     removals = [
         e.name
         for e in reg.entries.values()
-        if not e.builtin and e.name not in stats
+        if not e.builtin and e.name not in stats and e.name not in depended
     ]
 
     return {

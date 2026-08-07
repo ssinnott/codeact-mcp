@@ -37,6 +37,7 @@ class Meta:
     side_effects: str
     examples: tuple[Example, ...]
     requires_secrets: tuple[str, ...] = ()
+    uses: tuple[str, ...] = ()
     cost: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -62,6 +63,7 @@ def helper(
     side_effects: str = "none",
     examples: Sequence[Any] = (),
     requires_secrets: Sequence[str] = (),
+    uses: Sequence[str] = (),
     cost: str = "",
     **extra: Any,
 ) -> Callable[[Callable], Callable]:
@@ -74,6 +76,9 @@ def helper(
         examples: Runnable snippets. Their real output is captured at approval.
         requires_secrets: Secret names this helper is authorized to read.
             Approving the helper approves this specific binding and nothing else.
+        uses: Names of other helpers this one calls. The gate verifies the
+            declaration against the imports, both directions, and a helper's
+            effective reach is its own plus everything it uses, transitively.
         cost: Free-text hint when a call is slow or hits the network.
     """
 
@@ -84,6 +89,7 @@ def helper(
             side_effects=side_effects,
             examples=_coerce_examples(examples),
             requires_secrets=tuple(requires_secrets),
+            uses=tuple(uses),
             cost=cost,
             extra=extra,
         )

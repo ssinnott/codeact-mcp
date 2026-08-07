@@ -26,6 +26,11 @@ def helpers_dir() -> Path:
     return root() / "helpers"
 
 
+def core_dir() -> Path:
+    """Shared pure code helpers may import — no cards, never discoverable (§12)."""
+    return root() / "core"
+
+
 # Helpers shipped with the plugin, so discovery has something to find on day
 # one. A module attribute rather than a constant read at import time: the tests
 # point it at a temp tree to assert on the loader rather than on what ships.
@@ -34,6 +39,12 @@ SEEDS = Path(__file__).resolve().parents[2] / "seeds"
 
 def seeds_dir() -> Path:
     return SEEDS
+
+
+def seeds_core_dir() -> Path:
+    """Core modules shipped with the plugin. Derived from the seeds directory so
+    the tests' habit of pointing SEEDS at a temp tree carries core with it."""
+    return seeds_dir() / "core"
 
 
 def proposals_dir() -> Path:
@@ -55,7 +66,7 @@ IGNORED = ("corpus.jsonl", "fingerprints.db", "*.log", "traces/")
 def ensure() -> Path:
     """Create the tree if absent. Safe to call on every startup."""
     r = root()
-    for d in (r, helpers_dir(), proposals_dir(), traces_dir()):
+    for d in (r, helpers_dir(), core_dir(), proposals_dir(), traces_dir()):
         d.mkdir(parents=True, exist_ok=True)
     gitignore = r / ".gitignore"
     # Rewritten when an entry is missing, not only when the file is absent:

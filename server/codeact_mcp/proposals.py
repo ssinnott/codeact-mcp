@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from . import cards, contract, paths, registry, taxonomy
+from . import cards, contract, linkage, paths, registry, taxonomy
 
 PENDING = "pending"
 REJECTED = "rejected"
@@ -40,6 +40,7 @@ class Proposal:
     domains: list[str] = field(default_factory=list)
     side_effects: str = "none"
     requires_secrets: list[str] = field(default_factory=list)
+    uses: list[str] = field(default_factory=list)
     reason: str = ""
     diff: dict[str, Any] = field(default_factory=dict)
     # A human said no, as opposed to the gate saying no. Both end up REJECTED,
@@ -109,29 +110,45 @@ def _load_candidate(source: str, name: str):
     return tmp, entries
 
 
-def _capability_delta(old: Any, new_meta) -> dict[str, Any]:
-    """What a revision changes about reach.
+def _capability_delta(old: Any, new_meta, new_reach: Any = None) -> dict[str, Any]:
+    """What a revision changes about reach — effective reach, not declared.
 
     A helper quietly gaining network access or a secret is the single most
     dangerous edit in the system, and it looks identical whether the cause is
     malice or a confused agent — so it is surfaced on its own rather than left
-    to be spotted in a source diff.
+    to be spotted in a source diff. Comparing declared sets is not enough: a
+    revision whose entire change is `uses=["gh_pr_fetch"]` gains network and a
+    secret while its own declarations change nothing at all, which is exactly
+    the edit this check exists to catch (§12).
     """
     if old is None:
         return {}
     before, after = old.card.meta, new_meta
+
+    def effects_of(reach: Any, meta) -> set:
+        if reach is not None:
+            return {e for e, _ in reach.effects}
+        return {meta.side_effects} - {"none"}
+
+    def secrets_of(reach: Any, meta) -> set:
+        if reach is not None:
+            return {s for s, _ in reach.secrets}
+        return set(meta.requires_secrets)
+
+    def label(effects: set) -> str:
+        return "+".join(sorted(effects)) or "none"
+
+    before_effects = effects_of(old.card.reach, before)
+    after_effects = effects_of(new_reach, after)
     delta: dict[str, Any] = {}
-    if before.side_effects != after.side_effects:
-        delta["side_effects"] = [before.side_effects, after.side_effects]
-    gained = set(after.requires_secrets) - set(before.requires_secrets)
+    if before_effects != after_effects:
+        delta["side_effects"] = [label(before_effects), label(after_effects)]
+    gained = secrets_of(new_reach, after) - secrets_of(old.card.reach, before)
     if gained:
         delta["secrets_gained"] = sorted(gained)
     if before.job != after.job:
         delta["job"] = [before.job, after.job]
-    delta["escalates"] = bool(
-        gained
-        or (before.side_effects == "none" and after.side_effects != "none")
-    )
+    delta["escalates"] = bool(gained or (after_effects - before_effects))
     return delta
 
 
@@ -193,11 +210,43 @@ def propose(name: str, source: str, revises: str = "") -> Proposal:
 
     entry = match[0]
     meta = entry.card.meta
-    proposal.problems += cards.validate(entry.fn)
+
+    # The edge, verified against the AST in both directions (§12): an imported
+    # helper the card does not declare is hidden reach, and a declared helper
+    # the file never imports is a stale card. Both are the reviewer's business.
+    imported = linkage.helper_imports(tmp)
+    undeclared = sorted(n for n in imported if n not in meta.uses)
+    if undeclared:
+        proposal.problems.append(
+            f"imports helper(s) {', '.join(undeclared)} without declaring them "
+            "in uses=[...] — an undeclared edge is hidden reach, and the "
+            "declaration is what a human reviews"
+        )
+    unused = sorted(n for n in meta.uses if n not in imported)
+    if unused:
+        proposal.problems.append(
+            f"declares uses={unused} but never imports them — a stale "
+            "declaration overstates the helper's reach"
+        )
+
+    reach = linkage.reach(name, meta, tmp, reg.entries)
+    entry.card.reach = reach
+    proposal.problems += cards.validate(entry.fn, reach=reach)
     proposal.job = meta.job
     proposal.domains = list(meta.domains)
     proposal.side_effects = meta.side_effects
     proposal.requires_secrets = list(meta.requires_secrets)
+    proposal.uses = sorted(dict.fromkeys([*meta.uses, *imported]))
+
+    # Core in the candidate's closure is checked here because approving the
+    # helper is approving everything it can reach — and core has no gate of
+    # its own to have said no earlier.
+    for closure_name, _ in linkage.closure(tmp):
+        layer, _, stem = closure_name.partition("/")
+        if layer == "core":
+            found = linkage.resolve("core", stem)
+            if found is not None:
+                proposal.problems += linkage.core_problems(found)
 
     # Near-duplicate check: a helper that already exists should be extended,
     # not shadowed by a second one that does almost the same thing.
@@ -223,7 +272,7 @@ def propose(name: str, source: str, revises: str = "") -> Proposal:
     proposal.card = entry.card.render()
 
     if revises:
-        proposal.diff = _capability_delta(reg.get(revises), meta)
+        proposal.diff = _capability_delta(reg.get(revises), meta, reach)
 
     return _settle(proposal)
 

@@ -547,5 +547,131 @@ class TestClosure(RegistryCase):
         self.assertNotEqual(before, linkage.closure_hash(path))
 
 
+CORE = '''
+"""Whitespace normalisation shared by text helpers."""
+
+def normalize(text):
+    return " ".join(text.split()).lower()
+'''
+
+USES_CORE = '''
+"""A helper that leans on a core module."""
+from __future__ import annotations
+from codeact import helper
+from codeact.core import textutil
+
+@helper(job="transform", domains=["text"], examples=[{"code": "tidy('  A  B ')"}])
+def tidy(text: str) -> str:
+    """Collapse whitespace and lowercase, for comparisons.
+
+    Use when: normalising before a comparison.
+    Don't use when: whitespace is significant.
+    Args:
+        text: any string
+    Returns:
+        the string lowercased with single spaces between words
+    """
+    return textutil.normalize(text)
+'''
+
+
+class TestCoreLayer(RegistryCase):
+    """§12: shared pure code with no card, reached as `from codeact.core import x`."""
+
+    def setUp(self):
+        super().setUp()
+        self.core = paths.core_dir()
+        self.core.mkdir()
+        self.seeds_core = self.seeds / "core"
+        self.seeds_core.mkdir()
+
+    def test_a_helper_can_import_a_core_module(self):
+        write(self.core, "textutil", CORE)
+        write(self.helpers, "tidy", USES_CORE)
+        self.assertEqual(self.load().get("tidy").fn("  A  B "), "a b")
+
+    def test_core_is_never_registered_as_a_helper(self):
+        write(self.core, "textutil", CORE)
+        write(self.helpers, "tidy", USES_CORE)
+        reg = self.load()
+        self.assertNotIn("normalize", reg.entries)
+        self.assertNotIn("textutil", reg.entries)
+
+    def test_the_user_core_shadows_a_seed_core_of_the_same_name(self):
+        write(self.seeds_core, "textutil", CORE)
+        write(self.core, "textutil", CORE.replace(".lower()", ".upper()"))
+        write(self.helpers, "tidy", USES_CORE)
+        self.assertEqual(self.load().get("tidy").fn("a b"), "A B")
+
+    def test_a_missing_core_module_names_the_helper_it_broke(self):
+        write(self.helpers, "tidy", USES_CORE)
+        reg = self.load()
+        self.assertIn("tidy", reg.broken)
+        self.assertIn("no core module named 'textutil'", reg.broken_reason("tidy"))
+
+    def test_editing_core_quarantines_the_dependent(self):
+        # The failure §12 exists to close: a core edit changes no helper file,
+        # so without the closure hash every dependent's card would silently go
+        # on claiming it was verified.
+        core = write(self.core, "textutil", CORE)
+        path = write(self.helpers, "tidy", USES_CORE)
+        registry.write_sidecar(
+            path, [{"code": "tidy('  A  B ')", "output": "'a b'", "ok": True}], helper="tidy"
+        )
+        self.assertFalse(self.load().get("tidy").quarantined)
+        core.write_text(core.read_text().replace(".lower()", ".upper()"))
+        entry = self.load().get("tidy")
+        self.assertTrue(entry.quarantined)
+        self.assertIn("code it depends on changed", entry.card.quarantine)
+
+    def test_a_core_cycle_is_refused_by_name(self):
+        write(self.core, "a", "from codeact.core import b\n")
+        write(self.core, "b", "from codeact.core import a\n")
+        write(
+            self.helpers,
+            "tidy",
+            USES_CORE.replace("from codeact.core import textutil", "from codeact.core import a"),
+        )
+        self.assertIn("cycle", self.load().broken_reason("tidy"))
+
+
+class TestCorePurity(RegistryCase):
+    """§12: core is pure by rule, or its reach launders through every dependent."""
+
+    def setUp(self):
+        super().setUp()
+        self.core = paths.core_dir()
+        self.core.mkdir()
+
+    def test_pure_computation_passes(self):
+        path = write(self.core, "textutil", CORE)
+        self.assertEqual(linkage.core_problems(path), [])
+
+    def test_reading_a_file_is_allowed(self):
+        # Tier 0/1: pure computation, at most reading a path it was handed.
+        path = write(self.core, "reader", "import pathlib\ndef peek(p):\n    return open(p).read()\n")
+        self.assertEqual(linkage.core_problems(path), [])
+
+    def test_network_reach_is_refused(self):
+        path = write(self.core, "fetcher", "import urllib.request\n")
+        problems = linkage.core_problems(path)
+        self.assertTrue(any("not pure" in p for p in problems))
+
+    def test_a_subprocess_is_refused(self):
+        path = write(self.core, "sheller", "import subprocess\n")
+        self.assertTrue(any("not pure" in p for p in linkage.core_problems(path)))
+
+    def test_importing_a_helper_is_refused(self):
+        path = write(self.core, "wrapper", "from codeact.helpers import shout\n")
+        problems = linkage.core_problems(path)
+        self.assertTrue(any("may import" in p for p in problems))
+
+    def test_a_decorated_function_is_refused(self):
+        # A core module with a card is a helper with extra steps.
+        path = write(self.core, "sneaky", GOOD)
+        problems = linkage.core_problems(path)
+        self.assertTrue(any("extra steps" in p for p in problems))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
